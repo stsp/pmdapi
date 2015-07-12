@@ -1,6 +1,9 @@
 #ifndef _LINUX_STDDEF_H
 #define _LINUX_STDDEF_H
 
+#include <sys/djtypes.h>
+__DJ_size_t
+
 #undef NULL
 #if defined(__cplusplus)
 #define NULL 0

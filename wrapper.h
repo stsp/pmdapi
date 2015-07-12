@@ -8,14 +8,21 @@
 #ifndef DPMI_H
 #define DPMI_H
 
+#include <dpmi.h>
+#include "sigcontext.h"
+#include "cpu.h"
+#include "vm86.h"
+
 typedef struct {
   unsigned short offset;
   unsigned short segment;
 } far_t;
 
+typedef unsigned short us;
 
-#define D_16_32(reg)		(DPMI_CLIENT_is_32() ? reg : reg & 0xffff)
+#define sigcontext_struct sigcontext
 
+#define DPMI_MAX_CLIENTS	32	/* maximal number of clients */
 #define PAGE_MASK	(~(PAGE_SIZE-1))
 /* to align the pointer to the (next) page boundary */
 #define PAGE_ALIGN(addr)	(((addr)+PAGE_SIZE-1)&PAGE_MASK)
@@ -24,20 +31,33 @@ enum { es_INDEX, cs_INDEX, ss_INDEX, ds_INDEX, fs_INDEX, gs_INDEX,
   eax_INDEX, ebx_INDEX, ecx_INDEX, edx_INDEX, esi_INDEX, edi_INDEX,
   ebp_INDEX, esp_INDEX };
 
-typedef struct pmaddr_s
-{
-    unsigned long	offset;
-    unsigned short	selector, __selectorh;
-} INTDESC;
-
+typedef __dpmi_paddr INTDESC;
+#define pmaddr_s __dpmi_paddr
+#if 0
+typedef struct dpmi_pm_block_stuct {
+  struct   dpmi_pm_block_stuct *next;
+  unsigned long handle;
+  unsigned long size;
+  char     *base;
+  u_short  *attrs;
+  int linear;
+} dpmi_pm_block;
+#else
+#define dpmi_pm_block __dpmi_meminfo
+#endif
 int ValidAndUsedSelector(unsigned short selector);
 
 extern int ConvertSegmentToDescriptor(unsigned short segment);
 extern int ConvertSegmentToCodeDescriptor(unsigned short segment);
 
-void *DPMImalloc(unsigned long size);
-int DPMIfree(void *addr);
-void *DPMIrealloc(void *addr, unsigned long size);
+dpmi_pm_block DPMImalloc(unsigned long size);
+int DPMIfree(unsigned long handle);
+dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size);
+
+extern INTDESC dpmi_get_interrupt_vector(unsigned char num);
+extern void dpmi_set_interrupt_vector(unsigned char num, INTDESC desc);
+void GetFreeMemoryInformation(unsigned long *lp);
+int GetDescriptor(us selector, unsigned long *lp);
 
 extern int SetSegmentBaseAddress(unsigned short selector,
 					unsigned long baseaddr);
@@ -50,32 +70,7 @@ extern int FreeDescriptor(unsigned short selector);
 extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
 extern void copy_context(struct sigcontext *d, struct sigcontext *s);
 
-struct sigcontext *GetRegs(void);
-unsigned short GetCurrentPSPSeg(void);
-void SetCurrentPSPSeg(unsigned short seg);
-void SetUserPSPSel(unsigned short sel);
-unsigned short GetUserPSPSel(void);
-void UnsetUserPSP(void);
-unsigned short GetCurrentEnvSel(void);
-void SetCurrentEnvSel(unsigned short sel);
-unsigned short GetUserDTASel(void);
-unsigned short GetDTASeg(void);
-unsigned long GetUserDTAOff(void);
-void SetUserDTA(struct pmaddr_s *addr);
-struct pmaddr_s *GetUserDTA(void);
-void UnsetUserDTA(void);
-int DPMI_CLIENT_is_32(void);
-void SetMouseCallBack(unsigned short sel, unsigned long off);
-void SetPS2mouseCallBack(unsigned short sel, unsigned long off);
-void SetInterruptVector(unsigned char num, unsigned short sel, unsigned long off);
-struct pmaddr_s GetInterruptVector(unsigned char num);
-unsigned long GetFreeMemory(void);
-void prepare_ems_frame(void);
-void restore_ems_frame(void);
-void DPMIpush(unsigned long val);
-
-#define SEL_ADR(seg, reg) sel_adr(seg, reg)
-extern unsigned long sel_adr(unsigned short seg, unsigned long reg);
+extern unsigned long SEL_ADR(unsigned short sel, unsigned long reg);
 
 void fake_int_to(int cs, int ip);
 void set_io_buffer(char *ptr, unsigned int size);
@@ -85,8 +80,15 @@ void emm_get_map_registers(char *ptr);
 void emm_set_map_registers(char *ptr);
 void emm_unmap_all(void);
 
+extern void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask);
+extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
+
+extern unsigned short dpmi_sel(void);
+void fake_call_to(int cs, int ip);
+
 #define DPMI_SEG 0
 #define DPMI_OFF 0
+#define DPMI_ADD 0
 #define HLT_OFF(x) 0
 #define EMM_SEGMENT 0
 #define DTA_Para_ADD 0
@@ -96,6 +98,8 @@ void emm_unmap_all(void);
 #define DOS_LONG_WRITE_OFF 0
 
 #define D_printf(...)
-#define error printf
+#define error(...)
+#define snprintf(a,b,c,d) sprintf(a,c,d)
+#define ConvertSegmentToDescriptor_lim(a,b) ConvertSegmentToDescriptor(a)
 
 #endif /* DPMI_H */

@@ -12,6 +12,7 @@ DO_OFFSETS(1,
 	OFFSET(SIGCONTEXT_es, sigcontext, es);
 	OFFSET(SIGCONTEXT_fs, sigcontext, fs);
 	OFFSET(SIGCONTEXT_gs, sigcontext, gs);
+	OFFSET(SIGCONTEXT_ss, sigcontext, ss);
 	OFFSET(SIGCONTEXT_eflags, sigcontext, eflags);
 	OFFSET(SIGCONTEXT_eax, sigcontext, eax);
 	OFFSET(SIGCONTEXT_ebx, sigcontext, ebx);
@@ -20,6 +21,6 @@ DO_OFFSETS(1,
 	OFFSET(SIGCONTEXT_esi, sigcontext, esi);
 	OFFSET(SIGCONTEXT_edi, sigcontext, edi);
 	OFFSET(SIGCONTEXT_ebp, sigcontext, ebp);
-	OFFSET(SIGCONTEXT_esp, sigcontext, esp);
+	OFFSET(SIGCONTEXT_esp, sigcontext, esp_at_signal);
 	OFFSET(SIGCONTEXT_eip, sigcontext, eip);
 )

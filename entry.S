@@ -3,52 +3,24 @@
 #define stack_size 0x4000
 
 #define S_REG(breg, reg) %ss:SIGCONTEXT_##reg(%breg)
-#define MOV_TO_REG(breg, src, dreg) mov S_REG(breg, src), %dreg
+#define MOV_TO_REG(breg, src, dreg) movl S_REG(breg, src), %dreg
 #define LOAD_REG(breg, reg) MOV_TO_REG(breg, reg, reg)
-.globl load_context
-load_context:
-      LOAD_REG(eax, ds)
-      LOAD_REG(eax, es)
-      LOAD_REG(eax, fs)
-      LOAD_REG(eax, gs)
-      pushl S_REG(eax, eflags)
-      popfl
-      LOAD_REG(eax, ecx)
-      LOAD_REG(eax, edx)
-      LOAD_REG(eax, ebx)
-      LOAD_REG(eax, esi)
-      LOAD_REG(eax, edi)
-      LOAD_REG(eax, eax)
-      ret
-
-#define MOV_FROM_REG(breg, sreg, dst) mov %sreg, S_REG(breg, dst)
+#define MOV_FROM_REG(breg, sreg, dst) movl %sreg, S_REG(breg, dst)
 #define SAVE_REG(breg, reg) MOV_FROM_REG(breg, reg, reg)
-.globl save_context
-save_context:
-      SAVE_REG(eax, ds)
-      SAVE_REG(eax, es)
-      SAVE_REG(eax, fs)
-      SAVE_REG(eax, gs)
-      pushfl
-      popl S_REG(eax, eflags)
-      SAVE_REG(eax, ecx)
-      SAVE_REG(eax, edx)
-      SAVE_REG(eax, ebx)
-      SAVE_REG(eax, esi)
-      SAVE_REG(eax, edi)
-      SAVE_REG(eax, eax)
-      ret
 
 do_int:
       subl   $12,%esp			/* dummy, cr2,oldmask,fpstate */
-      pushl  %ss
-      pushl  %esp			/* dummy, esp_at_signal */
+      pushl  %cs:tmp_ss
+      pushl  %cs:tmp_esp		/* esp_at_signal */
       pushl  %cs:tmp_flags
       pushl  8(%ebp)			/* cs */
       pushl  4(%ebp)			/* eip */
       pushl  $0				/* dummy, err */
       pushl  $0				/* dummy, trapno */
       pusha
+      pushl  (%ebp)
+      popl   8(%esp)			/* ebp */
+      movl   %ebp, %ss:tmp_ebp
       pushl  %ds
       pushl  %es
       pushl  %fs
@@ -65,7 +37,10 @@ do_int:
       popl   %fs
       popl   %es
       popl   %ds
+      pushl  8(%esp)
+      popl   (%ebp)
       popa
+      movl   %cs:tmp_ebp, %ebp
       addl   $2*4, %esp
       popl   4(%ebp)
       popl   8(%ebp)
@@ -86,6 +61,9 @@ _dos32_int21:
     pushl %ds
     movl %cs:_dseg32, %edi
     movl %edi, %ds
+    mov  %ss, tmp_ss
+    movl %esp, tmp_esp
+    addl $12, tmp_esp
     pushfl
     popl tmp_flags
     popl %ds
@@ -123,6 +101,9 @@ _dos16_int21:
     pushl %ds
     movl %cs:_dseg32, %edi
     movl %edi, %ds
+    mov  %ss, tmp_ss
+    movl %esp, tmp_esp
+    addl $12, tmp_esp
     pushfl
     popl tmp_flags
     popl %ds
@@ -162,8 +143,8 @@ common_entry:
     movl %esi, lss_ss1
     movl $(stack+stack_size), lss_esp1
     lss lss_esp1, %esp
-    pushl %eax
     pushl %ebx
+    pushl %eax
     call _entry
     lss lss_esp, %esp
     lret
@@ -231,6 +212,12 @@ _data16_end:
 
 tmp_flags:
 .long 0
+tmp_esp:
+.long 0
+tmp_ss:
+.long 0
+tmp_ebp:
+.long 0
 lss_esp:
 .long 0
 lss_ss:
@@ -238,6 +225,8 @@ lss_ss:
 lss_esp1:
 .long 0
 lss_ss1:
+.long 0
+ret_adr:
 .long 0
 stack:
 .rept stack_size

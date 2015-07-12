@@ -106,11 +106,11 @@ int main()
   info.eip = (unsigned long)entry32;
 
   if (__dpmi_install_resident_service_provider_callback(&info) == -1) {
-    printf("inst_RSP failed");
+    printf("inst_res failed");
     return 1;
   }
   if (__dpmi_terminate_and_stay_resident(0, 0) == -1) {
-    printf("TSR failed");
+    printf("tsr failed");
     return 1;
   }
   return 0;

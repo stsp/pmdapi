@@ -3,7 +3,6 @@ LD = i586-pc-msdosdjgpp-gcc
 CFLAGS = -Wall
 LDFLAGS = -Wall
 CFILES = msdos.c wrapper.c startup.c handlers.c calls.c
-#CFILES = startup.c handlers.c calls.c
 SFILES = entry.S
 OFILES = $(CFILES:.c=.o) $(SFILES:.S=.o)
 GFILES = asm-offsets.h
@@ -22,12 +21,15 @@ define gen-asm-offsets
 	 echo "#endif" )
 endef
 
-.SUFFIXES: .c .o
+.SUFFIXES: .c .o .s .S .h
 
 all: $(PROGRAM)
 
 clean:
 	rm -f $(PROGRAM) $(OFILES) $(GFILES)
+
+#install:
+#	cp $(PROGRAM) ..
 
 .c.o .S.o:
 	$(CC) $(CFLAGS) -c -o $@ $<

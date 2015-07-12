@@ -18,6 +18,9 @@ extern struct vm86_regs regs;
 #define _LWORD(reg)	(*((unsigned short *)&(scp->reg)))
 #define _HWORD(reg)	(*((unsigned short *)&(scp->reg) + 1))
 
+#define LO_WORD(wrd)	(*((unsigned short *)&(wrd)))
+#define HI_WORD(wrd)	(*((unsigned short *)&(wrd) + 1))
+
 #define _gs     (scp->gs)
 #define _fs     (scp->fs)
 #define _es     (scp->es)
