@@ -1,0 +1,8 @@
+PM DOS API translator allows the protected-mode program to call DOS
+services directly, via the familiar int 21h and similar techniques.
+It is usually a part of the DPMI server and is used by the DOS extenders.
+Unfortunately, many DPMI servers do not contain the DOS API translator,
+and as a result, some DOS extenders fail to run.
+
+This is a port of dosemu's DOS API translator, that can be installed as
+a TSR to provide the API translation services to protected-mode programs.
