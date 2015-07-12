@@ -82,11 +82,6 @@ void fake_int_to(int cs, int ip);
 void set_io_buffer(char *ptr, unsigned int size);
 void unset_io_buffer(void);
 
-int emm_get_partial_map_registers(void *ptr, const u_short *segs);
-void emm_set_partial_map_registers(const void *ptr);
-int emm_map_unmap_multi(const u_short *array, int handle, int map_len);
-int emm_get_size_for_partial_page_map(int pages);
-
 extern void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask);
 extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
 
