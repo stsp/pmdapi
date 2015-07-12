@@ -1,5 +1,7 @@
 #include <dpmi.h>
 #include <stdlib.h>
+#include <stddef.h>
+#include <stdint.h>
 #include "sigcontext.h"
 #include "cpu.h"
 #include "vm86.h"
@@ -7,6 +9,26 @@
 #include "wrapper.h"
 
 struct vm86_regs regs;
+typedef struct segment_descriptor_s
+{
+    unsigned int	base_addr;	/* Pointer to segment in flat memory */
+    unsigned int	limit;		/* Limit of Segment */
+    unsigned int	type:2;
+    unsigned int	is_32:1;	/* one for is 32-bit Segment */
+    unsigned int	readonly:1;	/* one for read only Segments */
+    unsigned int	is_big:1;	/* Granularity */
+    unsigned int	not_present:1;
+    unsigned int	useable:1;
+    unsigned int	used;		/* Segment in use by client # */
+					/* or Linux/GLibc (0xfe) */
+					/* or DOSEMU (0xff) */
+} SEGDESC;
+#define LDT_ENTRIES     8192
+#define MAX_SELECTORS   LDT_ENTRIES
+static SEGDESC Segments[MAX_SELECTORS];
+
+unsigned char *sda;
+unsigned char *mem_base;
 
 int ValidAndUsedSelector(unsigned short selector)
 {
@@ -31,10 +53,15 @@ int SetSegmentBaseAddress(unsigned short selector, unsigned long baseaddr)
 dpmi_pm_block DPMImalloc(unsigned long size)
 {
   __dpmi_meminfo info;
+  dpmi_pm_block block;
   info.size = size;
   if (__dpmi_allocate_memory(&info) == -1)
     info.size = 0;
-  return info;
+  block.base = info.address;
+  block.size = info.size;
+  block.handle = info.handle;
+  block.linear = 0;
+  return block;
 }
 
 int DPMIfree(unsigned long handle)
@@ -45,11 +72,16 @@ int DPMIfree(unsigned long handle)
 dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size)
 {
   __dpmi_meminfo info;
+  dpmi_pm_block block;
   info.handle = handle;
   info.size = size;
   if (__dpmi_resize_memory(&info) == -1)
     info.size = 0;
-  return info;
+  block.base = info.address;
+  block.size = info.size;
+  block.handle = info.handle;
+  block.linear = 0;
+  return block;
 }
 
 unsigned long GetSegmentBaseAddress(unsigned short selector)
@@ -95,17 +127,18 @@ void FreeSegRegs(struct sigcontext *scp, unsigned short selector)
     if ((_gs | 7) == (selector | 7)) _gs = 0;
 }
 
-void copy_context(struct sigcontext *d, struct sigcontext *s)
+void copy_context(struct sigcontext_struct *d,
+    struct sigcontext_struct *s, int copy_fpu)
 {
   *d = *s;
 }
 
-void dpmi_set_interrupt_vector(unsigned char num, INTDESC desc)
+void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc)
 {
   __dpmi_set_protected_mode_interrupt_vector(num, &desc);
 }
 
-INTDESC dpmi_get_interrupt_vector(unsigned char num)
+DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num)
 {
   __dpmi_paddr addr;
   __dpmi_get_protected_mode_interrupt_vector(num, &addr);
@@ -127,18 +160,35 @@ void restore_ems_frame(void)
 {
 }
 
-unsigned long SEL_ADR(unsigned short sel, unsigned long reg)
+static void *SEL_ADR_LDT(unsigned short sel, unsigned int reg, int is_32)
+{
+  unsigned long p;
+  if (is_32)
+    p = GetSegmentBase(sel) + reg;
+  else
+    p = GetSegmentBase(sel) + LO_WORD(reg);
+  /* The address needs to wrap, also in 64-bit! */
+  return MEM_BASE32(p);
+}
+
+void *SEL_ADR(unsigned short sel, unsigned int reg)
 {
   if (!(sel & 0x0004)) {
     /* GDT */
-    return (unsigned long) reg;
-  } else {
-    /* LDT */
-    if (SegmentIs32(sel))
-      return (unsigned long) (GetSegmentBaseAddress(sel) + reg );
-    else
-      return (unsigned long) (GetSegmentBaseAddress(sel) + LO_WORD(reg));
+    return (void *)(uintptr_t)reg;
   }
+  /* LDT */
+  return SEL_ADR_LDT(sel, reg, Segments[sel>>3].is_32);
+}
+
+void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32)
+{
+  if (!(sel & 0x0004)) {
+    /* GDT */
+    dosemu_error("GDT not allowed\n");
+    return (void *)(uintptr_t)reg;
+  }
+  return SEL_ADR_LDT(sel, reg, is_32);
 }
 
 void fake_int_to(int cs, int ip)
@@ -153,25 +203,39 @@ void unset_io_buffer(void)
 {
 }
 
-void emm_get_map_registers(char *ptr)
+int emm_get_partial_map_registers(void *ptr, const u_short *segs)
+{
+  return 0;
+}
+
+void emm_set_partial_map_registers(const void *ptr)
 {
 }
 
-void emm_set_map_registers(char *ptr)
+int emm_get_size_for_partial_page_map(int pages)
 {
+  return 0;
 }
 
-void emm_unmap_all(void)
+int emm_map_unmap_multi(const u_short *array, int handle, int map_len)
 {
+  return 0;
 }
 
-void GetFreeMemoryInformation(unsigned long *lp)
+void GetFreeMemoryInformation(unsigned int *lp)
 {
 }
 
 int GetDescriptor(us selector, unsigned long *lp)
 {
     return 0;
+}
+
+unsigned int GetSegmentBase(unsigned short selector)
+{
+  if (!ValidAndUsedSelector(selector))
+    return 0;
+  return Segments[selector >> 3].base_addr;
 }
 
 void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask)
@@ -182,11 +246,22 @@ void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask)
 {
 }
 
+u_short sda_cur_psp(unsigned char *sda)
+{
+  return 0;
+}
+
 unsigned short dpmi_sel(void)
 {
-    return 0;
+  return 0;
 }
 
 void fake_call_to(int cs, int ip)
 {
+}
+
+int decode_modify_segreg_insn(struct sigcontext_struct *scp, int pmode,
+    unsigned int *new_val)
+{
+  return 0;
 }

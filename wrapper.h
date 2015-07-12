@@ -19,6 +19,7 @@ typedef struct {
 } far_t;
 
 typedef unsigned short us;
+typedef uint32_t dosaddr_t;
 
 #define sigcontext_struct sigcontext
 
@@ -31,20 +32,20 @@ enum { es_INDEX, cs_INDEX, ss_INDEX, ds_INDEX, fs_INDEX, gs_INDEX,
   eax_INDEX, ebx_INDEX, ecx_INDEX, edx_INDEX, esi_INDEX, edi_INDEX,
   ebp_INDEX, esp_INDEX };
 
-typedef __dpmi_paddr INTDESC;
-#define pmaddr_s __dpmi_paddr
-#if 0
+typedef __dpmi_paddr DPMI_INTDESC;
+struct pmaddr_s
+{
+    unsigned int	offset;
+    unsigned short	selector;
+};
 typedef struct dpmi_pm_block_stuct {
   struct   dpmi_pm_block_stuct *next;
-  unsigned long handle;
-  unsigned long size;
-  char     *base;
+  unsigned int handle;
+  unsigned int size;
+  dosaddr_t base;
   u_short  *attrs;
   int linear;
 } dpmi_pm_block;
-#else
-#define dpmi_pm_block __dpmi_meminfo
-#endif
 int ValidAndUsedSelector(unsigned short selector);
 
 extern int ConvertSegmentToDescriptor(unsigned short segment);
@@ -54,37 +55,46 @@ dpmi_pm_block DPMImalloc(unsigned long size);
 int DPMIfree(unsigned long handle);
 dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size);
 
-extern INTDESC dpmi_get_interrupt_vector(unsigned char num);
-extern void dpmi_set_interrupt_vector(unsigned char num, INTDESC desc);
-void GetFreeMemoryInformation(unsigned long *lp);
+extern DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num);
+extern void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc);
+void GetFreeMemoryInformation(unsigned int *lp);
 int GetDescriptor(us selector, unsigned long *lp);
 
 extern int SetSegmentBaseAddress(unsigned short selector,
 					unsigned long baseaddr);
 unsigned long GetSegmentBaseAddress(unsigned short);
 unsigned long GetSegmentLimit(unsigned short);
+extern unsigned int GetSegmentBase(unsigned short);
 int SegmentIs32(unsigned short);
 extern int SetSegmentLimit(unsigned short, unsigned int);
 extern unsigned short AllocateDescriptors(int);
 extern int FreeDescriptor(unsigned short selector);
 extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
-extern void copy_context(struct sigcontext *d, struct sigcontext *s);
+extern void copy_context(struct sigcontext_struct *d,
+    struct sigcontext_struct *s, int copy_fpu);
+int decode_modify_segreg_insn(struct sigcontext_struct *scp, int pmode,
+    unsigned int *new_val);
 
-extern unsigned long SEL_ADR(unsigned short sel, unsigned long reg);
+void *SEL_ADR(unsigned short sel, unsigned int reg);
+void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
 
 void fake_int_to(int cs, int ip);
 void set_io_buffer(char *ptr, unsigned int size);
 void unset_io_buffer(void);
 
-void emm_get_map_registers(char *ptr);
-void emm_set_map_registers(char *ptr);
-void emm_unmap_all(void);
+int emm_get_partial_map_registers(void *ptr, const u_short *segs);
+void emm_set_partial_map_registers(const void *ptr);
+int emm_map_unmap_multi(const u_short *array, int handle, int map_len);
+int emm_get_size_for_partial_page_map(int pages);
 
 extern void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask);
 extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
 
 extern unsigned short dpmi_sel(void);
 void fake_call_to(int cs, int ip);
+
+extern unsigned char *sda;
+u_short sda_cur_psp(unsigned char *sda);
 
 #define DPMI_SEG 0
 #define DPMI_OFF 0
@@ -96,10 +106,41 @@ void fake_call_to(int cs, int ip);
 #define DOS_LONG_READ_OFF 0
 #define DOS_LONG_WRITE_SEG 0
 #define DOS_LONG_WRITE_OFF 0
+#define MSDOS_XMS_call 0
+#define DPMI_sel_code_start 0
+#define DPMI_SEL_OFF(x) (x-DPMI_sel_code_start)
+#define _CS 0
+#define _IP 0
+#define MSDOS_return_from_pm 0
 
 #define D_printf(...)
 #define error(...)
+#define dosemu_error(...)
 #define snprintf(a,b,c,d) sprintf(a,c,d)
 #define ConvertSegmentToDescriptor_lim(a,b) ConvertSegmentToDescriptor(a)
+#define MEMCPY_2DOS(dos_addr, unix_addr, n) \
+	memcpy(LINEAR2UNIX(dos_addr), (unix_addr), (n))
+#define MEMSET_DOS(dos_addr, val, n) \
+        memset(LINEAR2UNIX(dos_addr), (val), (n))
+#define MEMCPY_2UNIX(unix_addr, dos_addr, n) \
+	memcpy((unix_addr), LINEAR2UNIX(dos_addr), (n))
+static inline void *LINEAR2UNIX(unsigned int addr)
+{
+	return (void*)addr;
+}
+
+#define min(x,y) ({ \
+	typeof(x) _x = (x);	\
+	typeof(y) _y = (y);	\
+	_x < _y ? _x : _y; })
+
+extern unsigned char *mem_base;
+#define MK_FP32(s,o)		((void *)&mem_base[SEGOFF2LINEAR(s,o)])
+#define LINP(a) ((unsigned char *)0 + (a))
+static inline unsigned char *MEM_BASE32(dosaddr_t a)
+{
+    uint32_t off = (uint32_t)(ptrdiff_t)(mem_base + a);
+    return LINP(off);
+}
 
 #endif /* DPMI_H */

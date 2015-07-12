@@ -1,6 +1,7 @@
 CC = i586-pc-msdosdjgpp-gcc
 LD = i586-pc-msdosdjgpp-gcc
 CFLAGS = -Wall
+CPPFLAGS = -DDJGPP_PORT
 LDFLAGS = -Wall
 CFILES = msdos.c wrapper.c startup.c handlers.c calls.c
 SFILES = entry.S
@@ -32,15 +33,16 @@ clean:
 #	cp $(PROGRAM) ..
 
 .c.o .S.o:
-	$(CC) $(CFLAGS) -c -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
 .c.s:
-	$(CC) $(CFLAGS) -S -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) -S -o $@ $<
 
-.s.h:
+asm-offsets.h: asm-offsets.s
 	$(call gen-asm-offsets) < $< > $@
 
 entry.o: asm-offsets.h
 
+$(OFILES): $(CFILES) $(wildcard *.h)
 $(PROGRAM): $(OFILES)
 	$(LD) $(LDFLAGS) -o $@ $(OFILES)

@@ -1,5 +1,5 @@
 /*
- * (C) Copyright 1992, ..., 2005 the "DOSEMU-Development-Team".
+ * (C) Copyright 1992, ..., 2014 the "DOSEMU-Development-Team".
  *
  * for details see file COPYING in the DOSEMU distribution
  */
@@ -19,70 +19,118 @@
  *
  */
 
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdio.h>
+#include <stddef.h>
+#include <stdint.h>
 
+#ifdef DJGPP_PORT
 #include "wrapper.h"
+#define SUPPORT_DOSEMU_HELPERS 0
+#else
+#include "emu.h"
+#include "emu-ldt.h"
+#include "int.h"
+#include "bios.h"
+#include "dpmi.h"
+#include "dpmisel.h"
+#include "vgaemu.h"
+#include "utilities.h"
+#include "dos2linux.h"
+#define SUPPORT_DOSEMU_HELPERS 1
+#endif
 #include "emm.h"
 #include "msdos.h"
 
-#define TRANS_BUFFER_SEG EMM_SEGMENT
+#if SUPPORT_DOSEMU_HELPERS
+#include "doshelpers.h"
+#endif
 
-#define DTA_over_1MB (void*)(GetSegmentBaseAddress(MSDOS_CLIENT.user_dta_sel) + MSDOS_CLIENT.user_dta_off)
-#define DTA_under_1MB (void*)((MSDOS_CLIENT.lowmem_seg + DTA_Para_ADD) << 4)
+#define TRANS_BUFFER_SEG EMM_SEGMENT
+#define EXEC_SEG (MSDOS_CLIENT.lowmem_seg + EXEC_Para_ADD)
+
+#define DTA_over_1MB (SEL_ADR(MSDOS_CLIENT.user_dta_sel, MSDOS_CLIENT.user_dta_off))
+#define DTA_under_1MB SEGOFF2LINEAR(MSDOS_CLIENT.lowmem_seg + DTA_Para_ADD, 0)
 
 #define MAX_DOS_PATH 260
 
 #define D_16_32(reg)		(MSDOS_CLIENT.is_32 ? reg : reg & 0xffff)
 #define MSDOS_CLIENT (msdos_client[msdos_client_num - 1])
-#define CURRENT_ENV_SEL (READ_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0x2c)))
+#define CURRENT_ENV_SEL ((u_short)READ_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0x2c)))
+#define WRITE_ENV_SEL(sel) WRITE_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0x2c), sel)
 
 static int msdos_client_num = 0;
 static struct msdos_struct msdos_client[DPMI_MAX_CLIENTS];
 
-void msdos_init(int is_32, unsigned short mseg, unsigned short psp)
+static int ems_frame_mapped;
+static void *ems_map_buffer = NULL;
+static u_short ems_frame_unmap[EMM_UMA_STD_PHYS*2];
+static u_short ems_frame_segs[EMM_UMA_STD_PHYS+1];
+
+void msdos_setup(void)
 {
+    int i;
+
+    ems_map_buffer = malloc(emm_get_size_for_partial_page_map(EMM_UMA_STD_PHYS));
+    ems_frame_segs[0] = EMM_UMA_STD_PHYS;
+    for(i = 0; i < EMM_UMA_STD_PHYS; i++) {
+	ems_frame_segs[i + 1] = EMM_SEGMENT + i * (0x1000/EMM_UMA_STD_PHYS);
+	ems_frame_unmap[i * 2] = 0xffff;
+	ems_frame_unmap[i * 2 + 1] = i;
+    }
+}
+
+void msdos_init(int is_32, unsigned short mseg)
+{
+    unsigned short envp;
     msdos_client_num++;
     memset(&MSDOS_CLIENT, 0, sizeof(struct msdos_struct));
     MSDOS_CLIENT.is_32 = is_32;
     MSDOS_CLIENT.lowmem_seg = mseg;
-    MSDOS_CLIENT.current_psp = psp;
-    MSDOS_CLIENT.current_env_sel = READ_WORD(SEGOFF2LINEAR(psp, 0x2c));
+    /* convert environment pointer to a descriptor */
+    envp = READ_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0x2c));
+    if (envp) {
+	WRITE_ENV_SEL(ConvertSegmentToDescriptor(envp));
+	D_printf("DPMI: env segment %#x converted to descriptor %#x\n",
+		envp, CURRENT_ENV_SEL);
+    }
     D_printf("MSDOS: init, %i\n", msdos_client_num);
 }
 
 void msdos_done(void)
 {
+    if (CURRENT_ENV_SEL)
+      WRITE_ENV_SEL(GetSegmentBase(CURRENT_ENV_SEL) >> 4);
     msdos_client_num--;
     D_printf("MSDOS: done, %i\n", msdos_client_num);
 }
 
 int msdos_get_lowmem_size(void)
 {
-    return DTA_Para_SIZE;
+    return DTA_Para_SIZE + EXEC_Para_SIZE;
 }
 
-static void *msdos_malloc(unsigned long size)
+static unsigned int msdos_malloc(unsigned long size)
 {
   int i;
   dpmi_pm_block block = DPMImalloc(size);
   if (!block.size)
-    return NULL;
+    return 0;
   for (i = 0; i < MSDOS_MAX_MEM_ALLOCS; i++) {
     if (MSDOS_CLIENT.mem_map[i].size == 0) {
       MSDOS_CLIENT.mem_map[i] = block;
       break;
     }
   }
-  return (void*)block.address;
+  return block.base;
 }
 
-static int msdos_free(void *addr)
+static int msdos_free(unsigned int addr)
 {
   int i;
   for (i = 0; i < MSDOS_MAX_MEM_ALLOCS; i++) {
-    if (MSDOS_CLIENT.mem_map[i].address == (unsigned long)addr) {
+    if (MSDOS_CLIENT.mem_map[i].base == addr) {
       DPMIfree(MSDOS_CLIENT.mem_map[i].handle);
       MSDOS_CLIENT.mem_map[i].size = 0;
       return 0;
@@ -91,40 +139,42 @@ static int msdos_free(void *addr)
   return -1;
 }
 
-static void *msdos_realloc(void *addr, unsigned long new_size)
+static unsigned int msdos_realloc(unsigned int addr, unsigned int new_size)
 {
   int i;
   dpmi_pm_block block;
   block.size = 0;
   for (i = 0; i < MSDOS_MAX_MEM_ALLOCS; i++) {
-    if (MSDOS_CLIENT.mem_map[i].address == (unsigned long)addr) {
+    if (MSDOS_CLIENT.mem_map[i].base == addr) {
       block = MSDOS_CLIENT.mem_map[i];
       break;
     }
   }
   if (!block.size)
-    return NULL;
+    return 0;
   block = DPMIrealloc(block.handle, new_size);
   if (!block.size)
-    return NULL;
-  return (void*)block.address;
+    return 0;
+  MSDOS_CLIENT.mem_map[i] = block;
+  return block.base;
 }
 
 static void prepare_ems_frame(void)
 {
-    if (MSDOS_CLIENT.ems_frame_mapped)
+    if (ems_frame_mapped)
 	return;
-    MSDOS_CLIENT.ems_frame_mapped = 1;
-    emm_get_map_registers(MSDOS_CLIENT.ems_map_buffer);
-    emm_unmap_all();
+    ems_frame_mapped = 1;
+    emm_get_partial_map_registers(ems_map_buffer, ems_frame_segs);
+    /* 0 is the special OS_HANDLE */
+    emm_map_unmap_multi(ems_frame_unmap, 0, EMM_UMA_STD_PHYS);
 }
 
 static void restore_ems_frame(void)
 {
-    if (!MSDOS_CLIENT.ems_frame_mapped)
+    if (!ems_frame_mapped)
 	return;
-    emm_set_map_registers(MSDOS_CLIENT.ems_map_buffer);
-    MSDOS_CLIENT.ems_frame_mapped = 0;
+    emm_set_partial_map_registers(ems_map_buffer);
+    ems_frame_mapped = 0;
 }
 
 static int need_copy_dseg(struct sigcontext_struct *scp, int intr)
@@ -207,6 +257,14 @@ static int need_copy_eseg(struct sigcontext_struct *scp, int intr)
 		    return 1;
 	    }
 	    break;
+#if SUPPORT_DOSEMU_HELPERS
+	case DOS_HELPER_INT:			/* dosemu helpers */
+	    switch (_LO(ax)) {
+		case DOS_HELPER_PRINT_STRING:		/* print string to dosemu log */
+		    return 1;
+	    }
+	    break;
+#endif
     }
 
     return 0;
@@ -216,14 +274,14 @@ static int need_copy_eseg(struct sigcontext_struct *scp, int intr)
 /* and para. aligned.                                                 */
 static int in_dos_space(unsigned short sel, unsigned long off)
 {
-    unsigned long base = GetSegmentBaseAddress(sel);
+    unsigned int base = GetSegmentBase(sel);
 
     if (base + off > 0x10ffef) {	/* ffff:ffff for DOS high */
-      D_printf("MSDOS: base address %#lx of sel %#x > DOS limit\n", base, sel);
+      D_printf("MSDOS: base address %#x of sel %#x > DOS limit\n", base, sel);
       return 0;
     } else
     if (base & 0xf) {
-      D_printf("MSDOS: base address %#lx of sel %#x not para. aligned.\n", base, sel);
+      D_printf("MSDOS: base address %#x of sel %#x not para. aligned.\n", base, sel);
       return 0;
     } else
       return 1;
@@ -236,34 +294,34 @@ static void old_dos_terminate(struct sigcontext_struct *scp, int i)
 
     D_printf("MSDOS: old_dos_terminate, int=%#x\n", i);
 
-    REG(cs)  = MSDOS_CLIENT.current_psp;
+    REG(cs)  = CURRENT_PSP;
     REG(eip) = 0x100;
 
 #if 0
-    _eip = READ_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0xa));
+    _eip = READ_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0xa));
     _cs = ConvertSegmentToCodeDescriptor(
-      READ_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0xa+2)));
+      READ_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0xa+2)));
 #endif
 
     /* put our return address there */
-    WRITE_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0xa),
+    WRITE_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0xa),
 	     DPMI_OFF + HLT_OFF(DPMI_return_from_dosint) + i);
-    WRITE_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0xa+2), DPMI_SEG);
+    WRITE_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0xa+2), DPMI_SEG);
 
-    psp_seg_sel = READ_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0x16));
+    psp_seg_sel = READ_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0x16));
     /* try segment */
-    psp_sig = READ_WORD(SEG2LINEAR(psp_seg_sel));
+    psp_sig = READ_WORD(SEGOFF2LINEAR(psp_seg_sel, 0));
     if (psp_sig != 0x20CD) {
 	/* now try selector */
-	unsigned long addr;
-	D_printf("MSDOS: Trying PSP sel=%#x, V=%i, d=%i, l=%#lx\n",
+	unsigned int addr;
+	D_printf("MSDOS: Trying PSP sel=%#x, V=%i, d=%i, l=%#x\n",
 	    psp_seg_sel, ValidAndUsedSelector(psp_seg_sel),
 	    in_dos_space(psp_seg_sel, 0), GetSegmentLimit(psp_seg_sel));
 	if (ValidAndUsedSelector(psp_seg_sel) && in_dos_space(psp_seg_sel, 0) &&
 		GetSegmentLimit(psp_seg_sel) >= 0xff) {
-	    addr = GetSegmentBaseAddress(psp_seg_sel);
+	    addr = GetSegmentBase(psp_seg_sel);
 	    psp_sig = READ_WORD(addr);
-	    D_printf("MSDOS: Trying PSP sel=%#x, addr=%#lx\n", psp_seg_sel, addr);
+	    D_printf("MSDOS: Trying PSP sel=%#x, addr=%#x\n", psp_seg_sel, addr);
 	    if (!(addr & 0x0f) && psp_sig == 0x20CD) {
 		/* found selector */
 		parent_psp = addr >> 4;
@@ -278,14 +336,12 @@ static void old_dos_terminate(struct sigcontext_struct *scp, int i)
     if (!parent_psp) {
 	/* no PSP found, use current as the last resort */
 	D_printf("MSDOS: using current PSP as parent!\n");
-	parent_psp = MSDOS_CLIENT.current_psp;
+	parent_psp = CURRENT_PSP;
     }
 
     D_printf("MSDOS: parent PSP seg=%#x\n", parent_psp);
     if (parent_psp != psp_seg_sel)
-	WRITE_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0x16), parent_psp);
-    /* And update our PSP pointer */
-    MSDOS_CLIENT.current_psp = parent_psp;
+	WRITE_WORD(SEGOFF2LINEAR(CURRENT_PSP, 0x16), parent_psp);
 }
 
 /*
@@ -307,7 +363,7 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	switch (_HI(ax)) {	/* functions use DTA */
 	case 0x11: case 0x12:	/* find first/next using FCB */
 	case 0x4e: case 0x4f:	/* find first/next */
-	    MEMCPY_DOS2DOS(DTA_under_1MB, DTA_over_1MB, 0x80);
+	    MEMCPY_2DOS(DTA_under_1MB, DTA_over_1MB, 0x80);
 	    break;
 	}
     }
@@ -324,10 +380,10 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    switch (_LO(ax)) {
 	      case 0x07:		/* set handler addr */
 		if ( _es && D_16_32(_ebx) ) {
-		  D_printf("MSDOS: PS2MOUSE: set handler addr 0x%x:0x%lx\n",
+		  D_printf("MSDOS: PS2MOUSE: set handler addr 0x%x:0x%x\n",
 		    _es, D_16_32(_ebx));
 		  MSDOS_CLIENT.PS2mouseCallBack.selector = _es;
-		  MSDOS_CLIENT.PS2mouseCallBack.offset32 = D_16_32(_ebx); 
+		  MSDOS_CLIENT.PS2mouseCallBack.offset = D_16_32(_ebx);
 		  REG(es) = DPMI_SEG;
 		  REG(ebx) = DPMI_OFF + HLT_OFF(MSDOS_PS2_mouse_callback);
 		} else {
@@ -350,7 +406,7 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	switch (_HI(ax)) {
 	    /* first see if we don\'t need to go to real mode */
 	case 0x25: {		/* set vector */
-	      INTDESC desc;
+	      DPMI_INTDESC desc;
 	      desc.selector = _ds;
 	      desc.offset32 = D_16_32(_edx);
 	      dpmi_set_interrupt_vector(_LO(ax), desc);
@@ -359,7 +415,7 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    }
 	    return MSDOS_DONE;
 	case 0x35: {	/* Get Interrupt Vector */
-	      INTDESC desc = dpmi_get_interrupt_vector(_LO(ax));
+	      DPMI_INTDESC desc = dpmi_get_interrupt_vector(_LO(ax));
 	      _es = desc.selector;
 	      _ebx = desc.offset32;
 	      D_printf("MSDOS: int 21,ax=0x%04x, es=0x%04x. bx=0x%04x\n",
@@ -369,16 +425,16 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	case 0x48:		/* allocate memory */
 	    {
 		unsigned long size = _LWORD(ebx) << 4;
-		void *addr = msdos_malloc(size);
+		unsigned int addr = msdos_malloc(size);
 		if (!addr) {
-		    unsigned long meminfo[12];
+		    unsigned int meminfo[12];
 		    GetFreeMemoryInformation(meminfo);
 		    _eflags |= CF;
 		    _LWORD(ebx) = meminfo[0] >> 4;
 		    _LWORD(eax) = 0x08;
 		} else {
 		    unsigned short sel = AllocateDescriptors(1);
-		    SetSegmentBaseAddress(sel, (unsigned long)addr);
+		    SetSegmentBaseAddress(sel, addr);
 		    SetSegmentLimit(sel, size - 1);
 		    _LWORD(eax) = sel;
 		    _eflags &= ~CF;
@@ -387,7 +443,7 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    }
 	case 0x49:		/* free memory */
 	    {
-		if (msdos_free((void *)GetSegmentBaseAddress(_es)) == -1) {
+		if (msdos_free(GetSegmentBase(_es)) == -1) {
 		    _eflags |= CF;
 		} else {
 		    _eflags &= ~CF;
@@ -398,16 +454,16 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    }
 	case 0x4a:		/* reallocate memory */
 	    {
-		unsigned long new_size = _LWORD(ebx) << 4;
-		void *addr = msdos_realloc((void *)GetSegmentBaseAddress(_es), new_size);
+		unsigned new_size = _LWORD(ebx) << 4;
+		unsigned addr = msdos_realloc(GetSegmentBase(_es), new_size);
 		if (!addr) {
-		    unsigned long meminfo[12];
+		    unsigned int meminfo[12];
 		    GetFreeMemoryInformation(meminfo);
 		    _eflags |= CF;
 		    _LWORD(ebx) = meminfo[0] >> 4;
 		    _LWORD(eax) = 0x08;
 		} else {
-		    SetSegmentBaseAddress(_es, (unsigned long)addr);
+		    SetSegmentBaseAddress(_es, addr);
 		    SetSegmentLimit(_es, new_size - 1);
 		    _eflags &= ~CF;
 		}
@@ -427,7 +483,7 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	case 0x54:
 	case 0x58: case 0x59:
 	case 0x5c:		/* lock */
-	case 0x66 ... 0x68:	
+	case 0x66 ... 0x68:
 	case 0xF8:		/* OEM SET vector */
 	    return 0;
 	case 0x00:		/* DOS terminate */
@@ -441,8 +497,8 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		prepare_ems_frame();
 		REG(ds) = TRANS_BUFFER_SEG;
 		REG(edx) = 0;
-		d = (char *)(REG(ds)<<4);
-		s = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx);
+		d = SEG2LINEAR(REG(ds));
+		s = SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32);
 		for(i=0; i<0xffff; i++, d++, s++) {
 		    *d = *s;
 		    if( *s == '$')
@@ -458,15 +514,15 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		MSDOS_CLIENT.user_dta_off = off;
 		REG(ds) = MSDOS_CLIENT.lowmem_seg+DTA_Para_ADD;
 		REG(edx)=0;
-                MEMCPY_DOS2DOS(DTA_under_1MB, DTA_over_1MB, 0x80);
+                MEMCPY_2DOS(DTA_under_1MB, DTA_over_1MB, 0x80);
 	    } else {
-                REG(ds) = GetSegmentBaseAddress(_ds) >> 4;
+                REG(ds) = GetSegmentBase(_ds) >> 4;
                 MSDOS_CLIENT.user_dta_sel = 0;
             }
 	  }
 	  return 0;
-            
-	/* FCB functions */	    
+
+	/* FCB functions */
 	case 0x0f: case 0x10:	/* These are not supported by */
 	case 0x14: case 0x15:	/* dosx.exe, according to Ralf Brown */
 	case 0x21 ... 0x24:
@@ -480,9 +536,9 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	case 0x17:		/* rename using FCB */
 	    prepare_ems_frame();
 	    REG(ds) = TRANS_BUFFER_SEG;
-	    REG(edx)=0;
-	    MEMCPY_DOS2DOS(SEG_ADR((void *), ds, dx),
-			(void *)GetSegmentBaseAddress(_ds) + D_16_32(_edx),
+	    REG(edx) = 0;
+	    MEMCPY_2DOS(SEGOFF2LINEAR(REG(ds), LWORD(edx)),
+			SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
 			0x50);
 	    return 0;
 	case 0x29:		/* Parse a file name for FCB */
@@ -491,14 +547,14 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		prepare_ems_frame();
 		REG(ds) = seg;
 		REG(esi) = 0;
-		MEMCPY_DOS2DOS(SEG_ADR((void *), ds, si),
-			    (void *)GetSegmentBaseAddress(_ds) + D_16_32(_esi),
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(ds), LWORD(esi)),
+			    SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32),
 			    0x100);
 		seg += 0x10;
 		REG(es) = seg;
 		REG(edi) = 0;
-		MEMCPY_DOS2DOS(SEG_ADR((void *), es, di),
-			    (void *)GetSegmentBaseAddress(_es) + D_16_32(_edi),
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(edi)),
+			    SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
 			    0x50);
 	    }
 	    return 0;
@@ -508,38 +564,81 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    REG(esi) = 0;
 	    return 0;
 	case 0x4b:		/* EXEC */
-	    D_printf("BCC: call dos exec.\n");
-	    REG(cs) = DPMI_SEG;
-	    REG(eip) = DPMI_OFF + HLT_OFF(DPMI_return_from_dos_exec);
-	    msdos_pre_exec(scp);
-	    return MSDOS_ALT_RET | MSDOS_NEED_FORK;
-
-	case 0x50:		/* set PSP */
 	  {
-	    unsigned short envp;
-	    if ( !in_dos_space(_LWORD(ebx), 0)) {
-		MSDOS_CLIENT.user_psp_sel = _LWORD(ebx);
-		LWORD(ebx) = MSDOS_CLIENT.current_psp;
-		MEMCPY_DOS2DOS((void *)SEG2LINEAR(LWORD(ebx)), 
-		    (void *)GetSegmentBaseAddress(_LWORD(ebx)), 0x100);
-		D_printf("MSDOS: PSP moved from %p to %p\n",
-		    (char *)GetSegmentBaseAddress(_LWORD(ebx)),
-		    (void *)SEG2LINEAR(LWORD(ebx)));
-	    } else {
-		REG(ebx) = GetSegmentBaseAddress(_LWORD(ebx)) >> 4;
-		MSDOS_CLIENT.user_psp_sel = 0;
-	    }
-	    MSDOS_CLIENT.current_psp = LWORD(ebx);
-	    envp = *(unsigned short *)(((char *)(LWORD(ebx)<<4)) + 0x2c);
-	    if (envp && !in_dos_space(envp, 0)) {
-		/* DANG_FIXTHIS: Please implement the ENV translation! */
-		error("FIXME: ENV translation is not implemented\n");
-		MSDOS_CLIENT.current_env_sel = 0;
-	    } else {
-		MSDOS_CLIENT.current_env_sel = envp;
-	    }
+	    /* we must copy all data from higher 1MB to lower 1MB */
+	    unsigned short segment = EXEC_SEG;
+	    char *p;
+	    unsigned short sel,off;
+
+	    D_printf("BCC: call dos exec\n");
+	    /* must copy command line */
+	    REG(ds) = segment;
+	    REG(edx) = 0;
+	    p = SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32);
+	    snprintf((char *)SEG2LINEAR(REG(ds)), MAX_DOS_PATH, "%s", p);
+	    segment += (MAX_DOS_PATH + 0x0f) >> 4;
+
+	    /* must copy parameter block */
+	    REG(es) = segment;
+	    REG(ebx) = 0;
+	    MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(ebx)),
+	       SEL_ADR_CLNT(_es, _ebx, MSDOS_CLIENT.is_32), 0x20);
+	    segment += 2;
+#if 0
+	    /* now the envrionment segment */
+	    sel = READ_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)));
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)), segment);
+	    MEMCPY_2DOS(SEGOFF2LINEAR(segment, 0),           /* 4K envr. */
+		GetSegmentBase(sel),
+		0x1000);
+	    segment += 0x100;
+#else
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)), 0);
+#endif
+	    /* now the tail of the command line */
+	    off = READ_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+2));
+	    sel = READ_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+4));
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+4), segment);
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+2), 0);
+	    MEMCPY_2DOS(SEGOFF2LINEAR(segment, 0),
+		SEL_ADR_CLNT(sel, off, MSDOS_CLIENT.is_32),
+		0x80);
+	    segment += 8;
+
+	    /* set the FCB pointers to something reasonable */
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+6), 0);
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+8), segment);
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+0xA), 0);
+	    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+0xC), segment);
+	    MEMSET_DOS(SEGOFF2LINEAR(segment, 0), 0, 0x30);
+	    segment += 3;
+
+	    /* then the enviroment seg */
+	    if (CURRENT_ENV_SEL)
+		WRITE_ENV_SEL(GetSegmentBase(CURRENT_ENV_SEL) >> 4);
+
+	    if (segment != EXEC_SEG + EXEC_Para_SIZE)
+		error("DPMI: exec: seg=%#x (%#x), size=%#x\n",
+			segment, segment - EXEC_SEG, EXEC_Para_SIZE);
+	    if (ems_frame_mapped)
+		error("DPMI: exec: EMS frame should not be mapped here\n");
 	  }
 	  return 0;
+
+	case 0x50:		/* set PSP */
+	    if ( !in_dos_space(_LWORD(ebx), 0)) {
+		MSDOS_CLIENT.user_psp_sel = _LWORD(ebx);
+		LWORD(ebx) = CURRENT_PSP;
+		MEMCPY_DOS2DOS(SEGOFF2LINEAR(LWORD(ebx), 0),
+		    GetSegmentBase(_LWORD(ebx)), 0x100);
+		D_printf("MSDOS: PSP moved from %x to %x\n",
+		    GetSegmentBase(_LWORD(ebx)),
+		    SEGOFF2LINEAR(LWORD(ebx), 0));
+	    } else {
+		REG(ebx) = GetSegmentBase(_LWORD(ebx)) >> 4;
+		MSDOS_CLIENT.user_psp_sel = 0;
+	    }
+	    return 0;
 
 	case 0x26:		/* create PSP */
 	    prepare_ems_frame();
@@ -549,10 +648,9 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	case 0x55:		/* create & set PSP */
 	    if ( !in_dos_space(_LWORD(edx), 0)) {
 		MSDOS_CLIENT.user_psp_sel = _LWORD(edx);
-		LWORD(edx) = MSDOS_CLIENT.current_psp;
+		LWORD(edx) = CURRENT_PSP;
 	    } else {
-		REG(edx) = GetSegmentBaseAddress(_LWORD(edx)) >> 4;
-		MSDOS_CLIENT.current_psp = LWORD(edx);
+		REG(edx) = GetSegmentBase(_LWORD(edx)) >> 4;
 		MSDOS_CLIENT.user_psp_sel = 0;
 	    }
 	    return 0;
@@ -573,10 +671,10 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		prepare_ems_frame();
 		REG(ds) = TRANS_BUFFER_SEG;
 		REG(edx) = 0;
-		src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx);
+		src = SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32);
 		dst = SEG_ADR((char *), ds, dx);
-		D_printf("MSDOS: passing ASCIIZ > 1MB to dos %#x\n", (int)dst); 
-		D_printf("%#x: '%s'\n", (int)src, src);
+		D_printf("MSDOS: passing ASCIIZ > 1MB to dos %p\n", dst);
+		D_printf("%p: '%s'\n", src, src);
                 snprintf(dst, MAX_DOS_PATH, "%s", src);
 	    }
 	    return 0;
@@ -588,22 +686,22 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    }
 	    break;
 	case 0x3f:		/* dos read */
-	    set_io_buffer((char*)GetSegmentBaseAddress(_ds) + D_16_32(_edx),
+	    set_io_buffer(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
 		D_16_32(_ecx));
 	    prepare_ems_frame();
 	    REG(ds) = TRANS_BUFFER_SEG;
 	    REG(edx) = 0;
 	    REG(ecx) = D_16_32(_ecx);
-	    fake_int_to(DOS_LONG_READ_SEG, DOS_LONG_READ_OFF);
+	    fake_call_to(DOS_LONG_READ_SEG, DOS_LONG_READ_OFF);
 	    return MSDOS_ALT_ENT;
 	case 0x40:		/* DOS Write */
-	    set_io_buffer((char*)GetSegmentBaseAddress(_ds) + D_16_32(_edx),
+	    set_io_buffer(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
 		D_16_32(_ecx));
 	    prepare_ems_frame();
 	    REG(ds) = TRANS_BUFFER_SEG;
 	    REG(edx) = 0;
 	    REG(ecx) = D_16_32(_ecx);
-	    fake_int_to(DOS_LONG_WRITE_SEG, DOS_LONG_WRITE_OFF);
+	    fake_call_to(DOS_LONG_WRITE_SEG, DOS_LONG_WRITE_OFF);
 	    return MSDOS_ALT_ENT;
 	case 0x53:		/* Generate Drive Parameter Table  */
 	    {
@@ -611,15 +709,15 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		prepare_ems_frame();
 		REG(ds) = seg;
 		REG(esi) = 0;
-		MEMCPY_DOS2DOS(SEG_ADR((void *), ds, si),
-			    (void *)GetSegmentBaseAddress(_ds) + D_16_32(_esi),
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(ds), LWORD(esi)),
+			    SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32),
 			    0x30);
-		seg += 30;
+		seg += 3;
 
 		REG(es) = seg;
 		REG(ebp) = 0;
-		MEMCPY_DOS2DOS(SEG_ADR((void *), es, bp),
-			    (void *)GetSegmentBaseAddress(_es) + D_16_32(_ebp),
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(ebp)),
+			    SEL_ADR_CLNT(_es, _ebp, MSDOS_CLIENT.is_32),
 			    0x60);
 	    }
 	    return 0;
@@ -629,54 +727,61 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		prepare_ems_frame();
 		REG(ds) = seg;
 		REG(edx) = 0;
-		snprintf((char *)(REG(ds)<<4), MAX_DOS_PATH, "%s",
-			     (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx));
+		snprintf(SEG2LINEAR(REG(ds)), MAX_DOS_PATH, "%s",
+			     (char *)SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32));
 		seg += 0x20;
 
 		REG(es) = seg;
 		REG(edi) = 0;
-		snprintf((char *)(REG(es)<<4), MAX_DOS_PATH, "%s",
-			     (char *)GetSegmentBaseAddress(_es) + D_16_32(_edi));
+		snprintf(SEG2LINEAR(REG(es)), MAX_DOS_PATH, "%s",
+			     (char *)SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32));
 	    }
 	    return 0;
 	case 0x5f:		/* redirection */
 	    switch (_LO(ax)) {
+	    unsigned short seg;
 	    case 0: case 1:
 		return 0;
 	    case 2 ... 6:
 		prepare_ems_frame();
-		REG(ds) = TRANS_BUFFER_SEG;
+		seg = TRANS_BUFFER_SEG;
+		REG(ds) = seg;
 		REG(esi) = 0;
-		MEMCPY_DOS2DOS(SEG_ADR((void *), ds, si),
-			(void *)GetSegmentBaseAddress(_ds) + D_16_32(_esi),
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(ds), LWORD(esi)),
+			SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32),
 			0x100);
-		REG(es) = TRANS_BUFFER_SEG + 0x10;
+		seg += 0x10;
+		REG(es) = seg;
 		REG(edi) = 0;
-		MEMCPY_DOS2DOS(SEG_ADR((void *), es, di),
-			(void *)GetSegmentBaseAddress(_es) + D_16_32(_edi),
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(edi)),
+			SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
 			0x100);
 		return 0;
 	    }
 	case 0x60:		/* Get Fully Qualified File Name */
-	    prepare_ems_frame();
-	    REG(ds) = TRANS_BUFFER_SEG;
-	    REG(esi) = 0;
-	    MEMCPY_DOS2DOS(SEG_ADR((void *), ds, si),
-		    (void *)GetSegmentBaseAddress(_ds) + D_16_32(_esi),
+	    {
+		unsigned short seg = TRANS_BUFFER_SEG;
+		prepare_ems_frame();
+		REG(ds) = seg;
+		REG(esi) = 0;
+		MEMCPY_2DOS(SEGOFF2LINEAR(REG(ds), LWORD(esi)),
+		    SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32),
 		    0x100);
-	    REG(es) = TRANS_BUFFER_SEG + 0x10;
-	    REG(edi) = 0;
-	    return 0;
+		seg += 0x10;
+		REG(es) = seg;
+		REG(edi) = 0;
+		return 0;
+	    }
 	case 0x6c:		/*  Extended Open/Create */
 	    {
 		char *src, *dst;
 		prepare_ems_frame();
 		REG(ds) = TRANS_BUFFER_SEG;
 		REG(esi) = 0;
-		src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_esi);
+		src = SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32);
 		dst = SEG_ADR((char *), ds, si);
-		D_printf("MSDOS: passing ASCIIZ > 1MB to dos %#x\n", (int)dst); 
-		D_printf("%#x: '%s'\n", (int)src, src);
+		D_printf("MSDOS: passing ASCIIZ > 1MB to dos %p\n", dst);
+		D_printf("%p: '%s'\n", src, src);
 		snprintf(dst, MAX_DOS_PATH, "%s", src);
 	    }
 	    return 0;
@@ -686,8 +791,8 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		    prepare_ems_frame();
 		    REG(es) = TRANS_BUFFER_SEG;
 		    REG(edi) = 0;
-		    MEMCPY_DOS2DOS(SEG_ADR((void *), es, di),
-			(void *)GetSegmentBaseAddress(_es) + D_16_32(_edi),
+		    MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(edi)),
+			SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
 			_LWORD(ecx));
 		    break;
 		case 1 ... 7:
@@ -700,8 +805,8 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		    prepare_ems_frame();
 		    REG(ds) = TRANS_BUFFER_SEG;
 		    REG(edx) = 0;
-		    MEMCPY_DOS2DOS(SEG_ADR((void *), ds, dx),
-			(void *)GetSegmentBaseAddress(_ds) + D_16_32(_edx),
+		    MEMCPY_2DOS(SEGOFF2LINEAR(REG(ds), LWORD(edx)),
+			SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
 			_LWORD(ecx));
 		    break;
 		case 0x22:
@@ -710,7 +815,7 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 		    REG(ds) = TRANS_BUFFER_SEG;
 		    REG(edx) = 0;
 		    strcpy(SEG_ADR((void *), ds, dx),
-			(void *)GetSegmentBaseAddress(_ds) + D_16_32(_edx));
+			SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32));
 		    break;
 	    }
             return 0;
@@ -721,58 +826,70 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
         case 0x3B: /* change dir */
         case 0x41: /* delete file */
         case 0x43: /* get file attributes */
+	    prepare_ems_frame();
             REG(ds) = TRANS_BUFFER_SEG;
             REG(edx) = 0;
-            src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx);
+            src = SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32);
             dst = SEG_ADR((char *), ds, dx);
             snprintf(dst, MAX_DOS_PATH, "%s", src);
             return 0;
         case 0x4E: /* find first file */
+	    prepare_ems_frame();
             REG(ds) = TRANS_BUFFER_SEG;
             REG(edx) = 0;
             REG(es) = TRANS_BUFFER_SEG;
             REG(edi) = MAX_DOS_PATH;
-            src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx);
+            src = SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32);
             dst = SEG_ADR((char *), ds, dx);
             snprintf(dst, MAX_DOS_PATH, "%s", src);
             return 0;
         case 0x4F: /* find next file */
+	    prepare_ems_frame();
             REG(es) = TRANS_BUFFER_SEG;
             REG(edi) = 0;
-            src = (char *)GetSegmentBaseAddress(_es) + D_16_32(_edi);
-            dst = SEG_ADR((char *), es, di);
-            MEMCPY_DOS2DOS(dst, src, 0x13e);
+            MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(edi)),
+			   SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
+			   0x13e);
             return 0;
         case 0x47: /* get cur dir */
+	    prepare_ems_frame();
             REG(ds) = TRANS_BUFFER_SEG;
             REG(esi) = 0;
             return 0;
 	case 0x60: /* canonicalize filename */
+	    prepare_ems_frame();
 	    REG(ds) = TRANS_BUFFER_SEG;
 	    REG(esi) = 0;
 	    REG(es) = TRANS_BUFFER_SEG;
 	    REG(edi) = MAX_DOS_PATH;
-	    src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_esi);	
+	    src = SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32);
 	    dst = SEG_ADR((char *), ds, si);
 	    snprintf(dst, MAX_DOS_PATH, "%s", src);
 	    return 0;
         case 0x6c: /* extended open/create */
+	    prepare_ems_frame();
             REG(ds) = TRANS_BUFFER_SEG;
             REG(esi) = 0;
-            src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_esi);
+            src = SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32);
             dst = SEG_ADR((char *), ds, si);
             snprintf(dst, MAX_DOS_PATH, "%s", src);
             return 0;
         case 0xA0: /* get volume info */
+	    prepare_ems_frame();
             REG(ds) = TRANS_BUFFER_SEG;
             REG(edx) = 0;
             REG(es) = TRANS_BUFFER_SEG;
             REG(edi) = MAX_DOS_PATH;
-            src = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx);
+            src = SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32);
             dst = SEG_ADR((char *), ds, dx);
             snprintf(dst, MAX_DOS_PATH, "%s", src);
             return 0;
         case 0xA1: /* close find */
+            return 0;
+        case 0xA6: /* get file info by handle */
+            prepare_ems_frame();
+            REG(ds) = TRANS_BUFFER_SEG;
+            REG(edx) = 0;
             return 0;
         default: /* all other subfuntions currently not supported */
             _eflags |= CF;
@@ -790,15 +907,15 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    prepare_ems_frame();
 	    REG(es) = TRANS_BUFFER_SEG;
 	    REG(edx) = 0;
-	    MEMCPY_DOS2DOS(SEG_ADR((void *), es, dx),
-		    (void *)GetSegmentBaseAddress(_es) + D_16_32(_edx),
+	    MEMCPY_2DOS(SEGOFF2LINEAR(REG(es), LWORD(edx)),
+		    SEL_ADR_CLNT(_es, _edx, MSDOS_CLIENT.is_32),
 		    16);
 	    return 0;
 	case 0x0c:		/* set call back */
 	case 0x14: {		/* swap call back */
-	    pmaddr_s old_callback = MSDOS_CLIENT.mouseCallBack;
+	    struct pmaddr_s old_callback = MSDOS_CLIENT.mouseCallBack;
 	    MSDOS_CLIENT.mouseCallBack.selector = _es;
-	    MSDOS_CLIENT.mouseCallBack.offset32 = D_16_32(_edx);
+	    MSDOS_CLIENT.mouseCallBack.offset = D_16_32(_edx);
 	    if (_es) {
 		D_printf("MSDOS: set mouse callback\n");
 		REG(es) = DPMI_SEG;
@@ -811,9 +928,9 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
 	    if (_LWORD(eax) == 0x14) {
 		_es = old_callback.selector;
 		if (MSDOS_CLIENT.is_32)
-		    _edx = old_callback.offset32;
+		    _edx = old_callback.offset;
 		else
-		    _LWORD(edx) = old_callback.offset32;
+		    _LWORD(edx) = old_callback.offset;
 	    }
 	  }
 	  return 0;
@@ -822,103 +939,31 @@ int msdos_pre_extender(struct sigcontext_struct *scp, int intr)
     }
 
     if (need_copy_dseg(scp, intr)) {
-	char *src, *dst;
+	unsigned int src, dst;
 	int len;
 	prepare_ems_frame();
 	REG(ds) = TRANS_BUFFER_SEG;
-	src = (char *)GetSegmentBaseAddress(_ds);
-	dst = (char *)(REG(ds)<<4);
-	len = GetSegmentLimit(_ds) + 1;
-	D_printf("MSDOS: whole segment of DS at %#x copy to DOS at %#x for %#x\n",
-		(int)src, (int)dst, len);
+	src = GetSegmentBase(_ds);
+	dst = SEGOFF2LINEAR(REG(ds), 0);
+	len = min((int)(GetSegmentLimit(_ds) + 1), 0x10000);
+	D_printf("MSDOS: whole segment of DS at %x copy to DOS at %x for %#x\n",
+		src, dst, len);
 	MEMCPY_DOS2DOS(dst, src, len);
     }
 
     if (need_copy_eseg(scp, intr)) {
-	char *src, *dst;
+	unsigned int  src, dst;
 	int len;
 	prepare_ems_frame();
 	REG(es) = TRANS_BUFFER_SEG;
-	src = (char *)GetSegmentBaseAddress(_es);
-	dst = (char *)(REG(es)<<4);
-	len = GetSegmentLimit(_es) + 1;
-	D_printf("MSDOS: whole segment of ES at %#x copy to DOS at %#x for %#x\n",
-		(int)src, (int)dst, len);
+	src = GetSegmentBase(_es);
+	dst = SEGOFF2LINEAR(REG(es), 0);
+	len = min((int)(GetSegmentLimit(_es) + 1), 0x10000);
+	D_printf("MSDOS: whole segment of ES at %x copy to DOS at %x for %#x\n",
+		src, dst, len);
 	MEMCPY_DOS2DOS(dst, src, len);
     }
     return 0;
-}
-
-void msdos_pre_exec(struct sigcontext_struct *scp)
-{
-    /* we must copy all data from higher 1MB to lower 1MB */
-    unsigned short segment = TRANS_BUFFER_SEG;
-    char *p;
-    unsigned short sel,off;
-
-    /* must copy command line */
-    prepare_ems_frame();
-    REG(ds) = segment;
-    REG(edx) = 0;
-    p = (char *)GetSegmentBaseAddress(_ds) + D_16_32(_edx);
-    snprintf((char *)SEG2LINEAR(REG(ds)), MAX_DOS_PATH, "%s", p);
-    segment += (MAX_DOS_PATH + 0x0f) >> 4;
-
-    /* must copy parameter block */
-    REG(es) = segment;
-    REG(ebx) = 0;
-    MEMCPY_DOS2DOS(SEG_ADR((void *), es, bx),
-       (void *)GetSegmentBaseAddress(_es) + D_16_32(_ebx), 0x20);
-    segment += 2;
-#if 0
-    /* now the envrionment segment */
-    sel = READ_WORD(SEG_ADR((unsigned short *), es, bx));
-    WRITE_WORD(SEG_ADR((unsigned short *), es, bx), segment);
-    MEMCPY_DOS2DOS((void *)SEG2LINEAR(segment),           /* 4K envr. */
-	(void *)GetSegmentBaseAddress(sel),
-	0x1000);
-    segment += 0x100;
-#else
-    WRITE_WORD(SEG_ADR((unsigned short *), es, bx), 0);
-#endif
-    /* now the tail of the command line */
-    off = READ_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+2));
-    sel = READ_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+4));
-    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+4), segment);
-    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+2), 0);
-    MEMCPY_DOS2DOS((void *)SEG2LINEAR(segment),
-	   (void *)GetSegmentBaseAddress(sel) + off,
-	   0x80);
-    segment += 8;
-
-    /* set the FCB pointers to something reasonable */
-    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+6), 0);
-    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+8), segment);
-    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+0xA), 0);
-    WRITE_WORD(SEGOFF2LINEAR(REG(es), LWORD(ebx)+0xC), segment);
-    memset((void *)SEG2LINEAR(segment), 0, 0x30);
-    segment += 3;
-
-    /* then the enviroment seg */
-    if (MSDOS_CLIENT.current_env_sel)
-	WRITE_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0x2c),
-	    GetSegmentBaseAddress(MSDOS_CLIENT.current_env_sel) >> 4);
-}
-
-void msdos_post_exec(struct sigcontext_struct *scp)
-{
-    _eflags = 0x0202 | (0x0dd5 & REG(eflags));
-    _eax = REG(eax);
-    if (!(LWORD(eflags) & CF)) {
-        _ebx = REG(ebx);
-        _edx = REG(edx);
-     }
-
-    if (MSDOS_CLIENT.current_env_sel)
-	WRITE_WORD(SEGOFF2LINEAR(MSDOS_CLIENT.current_psp, 0x2c),
-	    MSDOS_CLIENT.current_env_sel);
-
-    restore_ems_frame();
 }
 
 /*
@@ -944,36 +989,36 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 	switch (_HI(ax)) {	/* functions use DTA */
 	case 0x11: case 0x12:	/* find first/next using FCB */
 	case 0x4e: case 0x4f:	/* find first/next */
-	    MEMCPY_DOS2DOS(DTA_over_1MB, DTA_under_1MB, 0x80);
+	    MEMCPY_2UNIX(DTA_over_1MB, DTA_under_1MB, 0x80);
 	    break;
 	}
     }
 
     if (need_copy_dseg(scp, intr)) {
 	unsigned short my_ds;
-	char *src, *dst;
+	unsigned int src, dst;
 	int len;
 	my_ds = TRANS_BUFFER_SEG;
-	src = (char *)(my_ds<<4);
-	dst = (char *)GetSegmentBaseAddress(_ds);
-	len = GetSegmentLimit(_ds) + 1;
-	D_printf("MSDOS: DS seg at %#x copy back at %#x for %#x\n",
-		(int)src, (int)dst, len);
+	src = SEGOFF2LINEAR(my_ds, 0);
+	dst = GetSegmentBase(_ds);
+	len = min((int)(GetSegmentLimit(_ds) + 1), 0x10000);
+	D_printf("MSDOS: DS seg at %x copy back at %x for %#x\n",
+		src, dst, len);
 	MEMCPY_DOS2DOS(dst, src, len);
-    } 
+    }
 
     if (need_copy_eseg(scp, intr)) {
 	unsigned short my_es;
-	char *src, *dst;
+	unsigned int src, dst;
 	int len;
 	my_es = TRANS_BUFFER_SEG;
-	src = (char *)(my_es<<4);
-	dst = (char *)GetSegmentBaseAddress(_es);
-	len = GetSegmentLimit(_es) + 1;
-	D_printf("MSDOS: ES seg at %#x copy back at %#x for %#x\n",
-		(int)src, (int)dst, len);
+	src = SEGOFF2LINEAR(my_es, 0);
+	dst = GetSegmentBase(_es);
+	len = min((int)(GetSegmentLimit(_es) + 1), 0x10000);
+	D_printf("MSDOS: ES seg at %x copy back at %x for %#x\n",
+		src, dst, len);
 	MEMCPY_DOS2DOS(dst, src, len);
-    } 
+    }
 
     switch (intr) {
     case 0x10:			/* video */
@@ -994,8 +1039,8 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 	switch (_LWORD(eax)) {
 	    case 0x4310:
                 MSDOS_CLIENT.XMS_call = MK_FARt(REG(es), LWORD(ebx));
-                SET_REG(es, ConvertSegmentToCodeDescriptor(DPMI_SEG));
-                SET_REG(ebx, DPMI_OFF + HLT_OFF(MSDOS_XMS_call));
+                SET_REG(es, dpmi_sel());
+                SET_REG(ebx, DPMI_SEL_OFF(MSDOS_XMS_call));
 		break;
 	}
 	break;
@@ -1014,22 +1059,22 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
  	case 0x16:		/* Create usring FCB */
  	case 0x17:		/* rename using FCB */
  	    PRESERVE1(edx);
-	    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_ds) + D_16_32(_edx),
-			SEG_ADR((void *), ds, dx), 0x50);
+	    MEMCPY_2UNIX(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(ds), LWORD(edx)), 0x50);
 	    break;
 
 	case 0x29:		/* Parse a file name for FCB */
 	    PRESERVE2(esi, edi);
-	    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_ds) + D_16_32(_esi),
+	    MEMCPY_2UNIX(SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32),
 		/* Warning: SI altered, assume old value = 0, don't touch. */
-			    (void *)(REG(ds)<<4), 0x100);
+			    SEGOFF2LINEAR(REG(ds), 0), 0x100);
 	    SET_REG(esi, _esi + LWORD(esi));
-	    MEMCPY_DOS2DOS((void *)(GetSegmentBaseAddress(_es) + D_16_32(_edi)),
-			    SEG_ADR((void *), es, di),  0x50);
+	    MEMCPY_2UNIX(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
+			    SEGOFF2LINEAR(REG(es), LWORD(edi)),  0x50);
 	    break;
 
 	case 0x2f:		/* GET DTA */
-	    if (SEG_ADR((void*), es, bx) == DTA_under_1MB) {
+	    if (SEGOFF2LINEAR(REG(es), LWORD(ebx)) == DTA_under_1MB) {
 		if (!MSDOS_CLIENT.user_dta_sel)
 		    error("Selector is not set for the translated DTA\n");
 		SET_REG(es, MSDOS_CLIENT.user_dta_sel);
@@ -1068,24 +1113,19 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 	case 0x6c:		/*  Extended Open/Create */
 	    PRESERVE1(esi);
 	    break;
-	    
+
 	case 0x55:		/* create & set PSP */
-	  {
-	    unsigned short envp;
 	    PRESERVE1(edx);
-	    envp = READ_WORD(SEGOFF2LINEAR(LWORD(edx), 0x2c));
-	    MSDOS_CLIENT.current_env_sel = ConvertSegmentToDescriptor(envp);
-	    if ( !in_dos_space(_LWORD(edx), 0)) {
-		MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_LWORD(edx)),
-		    SEG2LINEAR(LWORD(edx)), 0x100);
+	    if (!in_dos_space(_LWORD(edx), 0)) {
+		MEMCPY_DOS2DOS(GetSegmentBase(_LWORD(edx)),
+		    SEGOFF2LINEAR(LWORD(edx), 0), 0x100);
 	    }
-	  }
-	  break;
+	    break;
 
 	case 0x26:		/* create PSP */
 	    PRESERVE1(edx);
-	    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_LWORD(edx)),
-		(void *)SEG2LINEAR(LWORD(edx)), 0x100);
+	    MEMCPY_DOS2DOS(GetSegmentBase(_LWORD(edx)),
+		SEGOFF2LINEAR(LWORD(edx), 0), 0x100);
 	  break;
 
         case 0x59:		/* Get EXTENDED ERROR INFORMATION */
@@ -1099,42 +1139,35 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 		if (LWORD(eflags) & CF)
 		    break;
 		/* FreeDOS copies only 0x18 bytes */
-		MEMCPY_DOS2DOS((void *)(GetSegmentBaseAddress(_ds) +
-		    D_16_32(_edx)), SEG_ADR((void *), ds, dx), 0x18);
+		MEMCPY_2UNIX(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(ds), LWORD(edx)), 0x18);
 	    }
 	    break;
 	case 0x47:		/* get CWD */
 	    PRESERVE1(esi);
 	    if (LWORD(eflags) & CF)
 		break;
-	    snprintf((char *)(GetSegmentBaseAddress(_ds) +
-			D_16_32(_esi)), 0x40, "%s", 
+	    snprintf(SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32), 0x40, "%s",
 		        SEG_ADR((char *), ds, si));
-	    D_printf("MSDOS: CWD: %s\n",(char *)(GetSegmentBaseAddress(_ds) +
-			D_16_32(_esi)));
+	    D_printf("MSDOS: CWD: %s\n",(char *)SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32));
 	    break;
-#if 0	    
+#if 0
 	case 0x48:		/* allocate memory */
 	    if (LWORD(eflags) & CF)
 		break;
 	    SET_REG(eax, ConvertSegmentToDescriptor(LWORD(eax)));
 	    break;
-#endif	    
+#endif
+	case 0x4b:		/* EXEC */
+	    if (CURRENT_ENV_SEL)
+		WRITE_ENV_SEL(ConvertSegmentToDescriptor(CURRENT_ENV_SEL));
+	    D_printf("DPMI: Return from DOS exec\n");
+	    break;
 	case 0x51:		/* get PSP */
 	case 0x62:
 	    {/* convert environment pointer to a descriptor*/
-		unsigned short 
-#if 0
-		envp,
-#endif
-		psp;
-		psp = LWORD(ebx);
-#if 0
-		envp = *(unsigned short *)(((char *)(psp<<4))+0x2c);
-		envp = ConvertSegmentToDescriptor(envp);
-		*(unsigned short *)(((char *)(psp<<4))+0x2c) = envp;
-#endif
-		if (psp == MSDOS_CLIENT.current_psp && MSDOS_CLIENT.user_psp_sel) {
+		unsigned short psp = LWORD(ebx);
+		if (psp == CURRENT_PSP && MSDOS_CLIENT.user_psp_sel) {
 		    SET_REG(ebx, MSDOS_CLIENT.user_psp_sel);
 		} else {
 		    SET_REG(ebx, ConvertSegmentToDescriptor_lim(psp, 0xff));
@@ -1143,8 +1176,8 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 	    break;
 	case 0x53:		/* Generate Drive Parameter Table  */
 	    PRESERVE2(esi, ebp);
-	    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_es) + D_16_32(_ebp),
-			    SEG_ADR((void *), es, bp),
+	    MEMCPY_2UNIX(SEL_ADR_CLNT(_es, _ebp, MSDOS_CLIENT.is_32),
+			    SEGOFF2LINEAR(REG(es), LWORD(ebp)),
 			    0x60);
 	    break ;
 	case 0x56:		/* rename */
@@ -1155,6 +1188,12 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 				/*        -> DS:SI                     */
 		SET_REG(ds, ConvertSegmentToDescriptor(REG(ds)));
 	    break;
+	case 0x63:		/* Get Lead Byte Table Address */
+	    /* _LO(ax)==0 is to test for 6300 on input, LO(ax)==0 for success*/
+	    if (_LO(ax) == 0 && LO(ax) == 0)
+	        SET_REG(ds, ConvertSegmentToDescriptor(REG(ds)));
+	    break;
+
 	case 0x3f:
 	    unset_io_buffer();
 	    PRESERVE2(edx, ecx);
@@ -1169,21 +1208,18 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 		break ;
 	    case 2 ... 6:
 		PRESERVE2(esi, edi);
-		MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_ds)
-			+ D_16_32(_esi),
-			SEG_ADR((void *), ds, si),
+		MEMCPY_2UNIX(SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(ds), LWORD(esi)),
 			0x100);
-		MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_es)
-			+ D_16_32(_edi),
-			SEG_ADR((void *), es, di),
+		MEMCPY_2UNIX(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(es), LWORD(edi)),
 			0x100);
 	    }
 	    break;
 	case 0x60:		/* Canonicalize file name */
 	    PRESERVE2(esi, edi);
-	    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_es)
-			+ D_16_32(_edi),
-			SEG_ADR((void *), es, di),
+	    MEMCPY_2UNIX(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(es), LWORD(edi)),
 			0x80);
 	    break;
 	case 0x65:		/* internationalization */
@@ -1192,22 +1228,19 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 		break;
     	    switch (_LO(ax)) {
 		case 1 ... 7:
-		    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_es)
-			+ D_16_32(_edi),
-			SEG_ADR((void *), es, di),
+		    MEMCPY_2UNIX(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(es), LWORD(edi)),
 			LWORD(ecx));
 		    break;
 		case 0x21:
 		case 0xa1:
-		    MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_ds)
-			+ D_16_32(_edx),
-			SEG_ADR((void *), ds, dx),
+		    MEMCPY_2UNIX(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
+			SEGOFF2LINEAR(REG(ds), LWORD(edx)),
 			_LWORD(ecx));
 		    break;
 		case 0x22:
 		case 0xa2:
-		    strcpy((void *)GetSegmentBaseAddress(_ds)
-			+ D_16_32(_edx),
+		    strcpy(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
 			SEG_ADR((void *), ds, dx));
 		    break;
 	    }
@@ -1226,25 +1259,22 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 	    PRESERVE1(edi);
             if (LWORD(eflags) & CF)
                 break;
-            MEMCPY_DOS2DOS((void *)GetSegmentBaseAddress(_es)
-                     + D_16_32(_edi),
-                     SEG_ADR((void *), es, di),
+            MEMCPY_2UNIX(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32),
+                     SEGOFF2LINEAR(REG(es), LWORD(edi)),
                         0x13E);
             break;
         case 0x47:
 	    PRESERVE1(esi);
             if (LWORD(eflags) & CF)
                 break;
-	    snprintf((char *)(GetSegmentBaseAddress(_ds) +
-			D_16_32(_esi)), MAX_DOS_PATH, "%s", 
+	    snprintf(SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32), MAX_DOS_PATH, "%s",
 		        SEG_ADR((char *), ds, si));
             break;
 	case 0x60:
 	    PRESERVE2(esi, edi);
 	    if (LWORD(eflags) & CF)
 		break;
-	    snprintf((void *)GetSegmentBaseAddress(_es) + 
-		D_16_32(_edi), MAX_DOS_PATH, "%s",
+	    snprintf(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32), MAX_DOS_PATH, "%s",
 		SEG_ADR((char *), es, di));
 	    break;
         case 0x6c:
@@ -1254,9 +1284,15 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
             PRESERVE2(edx, edi);
             if (LWORD(eflags) & CF)
                 break;
-            snprintf((void *)GetSegmentBaseAddress(_es) +
-                     D_16_32(_edi), _LWORD(ecx), "%s",
+            snprintf(SEL_ADR_CLNT(_es, _edi, MSDOS_CLIENT.is_32), _LWORD(ecx), "%s",
                      SEG_ADR((char *), es, di));
+            break;
+        case 0xA6:
+            PRESERVE1(edx);
+            if (LWORD(eflags) & CF)
+                break;
+            MEMCPY_2UNIX(SEL_ADR_CLNT(_ds, _edx, MSDOS_CLIENT.is_32),
+		    SEGOFF2LINEAR(REG(ds), LWORD(edx)), 0x34);
             break;
         };
 
@@ -1269,12 +1305,10 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 	/* the flags should be pushed to stack */
 	if (MSDOS_CLIENT.is_32) {
 	    _esp -= 4;
-	    *(unsigned long *)(GetSegmentBaseAddress(_ss) + _esp - 4) =
-	      REG(eflags);
+	    *(uint32_t *)(SEL_ADR_CLNT(_ss, _esp - 4, MSDOS_CLIENT.is_32)) = REG(eflags);
 	} else {
 	    _esp -= 2;
-	    *(unsigned short *)(GetSegmentBaseAddress(_ss) +
-	      _LWORD(esp) - 2) = LWORD(eflags);
+	    *(uint16_t *)(SEL_ADR_CLNT(_ss, _LWORD(esp) - 2, MSDOS_CLIENT.is_32)) = LWORD(eflags);
 	}
 	break;
     case 0x33:			/* mouse */
@@ -1297,10 +1331,10 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr)
 
 int msdos_pre_rm(struct sigcontext_struct *scp)
 {
-  unsigned char *lina = SEG_ADR((unsigned char *), cs, ip) - 1;
-  unsigned short *ssp = (us *) (GetSegmentBaseAddress(_ss) + D_16_32(_esp));
+  unsigned int lina = SEGOFF2LINEAR(_CS, _IP) - 1;
+  void *sp = SEL_ADR_CLNT(_ss, _esp, MSDOS_CLIENT.is_32);
 
-  if (lina == (unsigned char *)(DPMI_ADD + HLT_OFF(MSDOS_mouse_callback))) {
+  if (lina == DPMI_ADD + HLT_OFF(MSDOS_mouse_callback)) {
     if (!ValidAndUsedSelector(MSDOS_CLIENT.mouseCallBack.selector)) {
       D_printf("MSDOS: ERROR: mouse callback to unused segment\n");
       return 0;
@@ -1309,22 +1343,21 @@ int msdos_pre_rm(struct sigcontext_struct *scp)
     rm_to_pm_regs(scp, ~0);
     _ds = ConvertSegmentToDescriptor(REG(ds));
     _cs = MSDOS_CLIENT.mouseCallBack.selector;
-    _eip = MSDOS_CLIENT.mouseCallBack.offset32;
+    _eip = MSDOS_CLIENT.mouseCallBack.offset;
 
     if (MSDOS_CLIENT.is_32) {
-	*--ssp = (us) 0;
-	*--ssp = dpmi_sel(); 
-	ssp -= 2, *((unsigned long *) ssp) =
-	     DPMI_OFF + HLT_OFF(MSDOS_return_from_pm);
+	unsigned int *ssp = sp;
+	*--ssp = dpmi_sel();
+	*--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
 	_esp -= 8;
     } else {
-	*--ssp = dpmi_sel(); 
-	*--ssp = DPMI_OFF + HLT_OFF(MSDOS_return_from_pm);
+	unsigned short *ssp = sp;
+	*--ssp = dpmi_sel();
+	*--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
 	_LWORD(esp) -= 4;
     }
 
-  } else if (lina ==(unsigned char *)(DPMI_ADD +
-				      HLT_OFF(MSDOS_PS2_mouse_callback))) {
+  } else if (lina == DPMI_ADD + HLT_OFF(MSDOS_PS2_mouse_callback)) {
     unsigned short *rm_ssp;
     if (!ValidAndUsedSelector(MSDOS_CLIENT.PS2mouseCallBack.selector)) {
       D_printf("MSDOS: ERROR: PS2 mouse callback to unused segment\n");
@@ -1333,29 +1366,25 @@ int msdos_pre_rm(struct sigcontext_struct *scp)
     D_printf("MSDOS: starting PS2 mouse callback\n");
 
     _cs = MSDOS_CLIENT.PS2mouseCallBack.selector;
-    _eip = MSDOS_CLIENT.PS2mouseCallBack.offset32;
+    _eip = MSDOS_CLIENT.PS2mouseCallBack.offset;
 
-    rm_ssp = (unsigned short *)SEGOFF2LINEAR(LWORD(ss), LWORD(esp) + 4 + 8);
+    rm_ssp = MK_FP32(LWORD(ss), LWORD(esp) + 4 + 8);
 
     if (MSDOS_CLIENT.is_32) {
-	*--ssp = (us) 0;
+	unsigned int *ssp = sp;
 	*--ssp = *--rm_ssp;
 	D_printf("data: 0x%x ", *ssp);
-	*--ssp = (us) 0;
 	*--ssp = *--rm_ssp;
 	D_printf("0x%x ", *ssp);
-	*--ssp = (us) 0;
 	*--ssp = *--rm_ssp;
 	D_printf("0x%x ", *ssp);
-	*--ssp = (us) 0;
 	*--ssp = *--rm_ssp;
 	D_printf("0x%x\n", *ssp);
-	*--ssp = (us) 0;
-	*--ssp = dpmi_sel(); 
-	ssp -= 2, *((unsigned long *) ssp) =
-	     DPMI_OFF + HLT_OFF(MSDOS_return_from_pm);
+	*--ssp = dpmi_sel();
+	*--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
 	_esp -= 24;
     } else {
+	unsigned short *ssp = sp;
 	*--ssp = *--rm_ssp;
 	D_printf("data: 0x%x ", *ssp);
 	*--ssp = *--rm_ssp;
@@ -1364,8 +1393,8 @@ int msdos_pre_rm(struct sigcontext_struct *scp)
 	D_printf("0x%x ", *ssp);
 	*--ssp = *--rm_ssp;
 	D_printf("0x%x\n", *ssp);
-	*--ssp = dpmi_sel(); 
-	*--ssp = DPMI_OFF + HLT_OFF(MSDOS_return_from_pm);
+	*--ssp = dpmi_sel();
+	*--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
 	_LWORD(esp) -= 12;
     }
   }
@@ -1379,7 +1408,7 @@ void msdos_post_rm(struct sigcontext_struct *scp)
 
 int msdos_pre_pm(struct sigcontext_struct *scp)
 {
-  if (_eip==DPMI_OFF+1+HLT_OFF(MSDOS_XMS_call)) {
+  if (_eip==1+DPMI_SEL_OFF(MSDOS_XMS_call)) {
     D_printf("MSDOS: XMS call to 0x%x:0x%x\n",
 	MSDOS_CLIENT.XMS_call.segment, MSDOS_CLIENT.XMS_call.offset);
     pm_to_rm_regs(scp, ~0);
@@ -1387,7 +1416,7 @@ int msdos_pre_pm(struct sigcontext_struct *scp)
     REG(eip) = DPMI_OFF + HLT_OFF(MSDOS_return_from_rm);
     fake_call_to(MSDOS_CLIENT.XMS_call.segment, MSDOS_CLIENT.XMS_call.offset);
   } else {
-    error("MSDOS: unknown pm call %p\n", _eip);
+    error("MSDOS: unknown pm call %#x\n", _eip);
     return 0;
   }
   return 1;
@@ -1398,197 +1427,13 @@ void msdos_post_pm(struct sigcontext_struct *scp)
   rm_to_pm_regs(scp, ~0);
 }
 
-#if 0
-
-static int
-decode_pop_segreg(struct sigcontext_struct *scp, unsigned short
-		       *segment, unsigned char * sreg)
-{
-    unsigned short *ssp;
-    unsigned char *csp;
-    int len;
-
-    csp = (unsigned char *) SEL_ADR(_cs, _eip);
-    ssp = (unsigned short *) SEL_ADR(_ss, _esp);
-    len = 0;
-    switch (*csp) {
-    case 0x1f:			/* pop ds */
-	len = 1;
-	*segment = *ssp;
-	*sreg = ds_INDEX;
-	break;
-    case 0x07:			/* pop es */
-	len = 1;
-	*segment = *ssp;
-	*sreg = es_INDEX;
-	break;
-    case 0x17:			/* pop ss */
-	len = 1;
-	*segment = *ssp;
-	*sreg = ss_INDEX;
-	break;
-    case 0x0f:		/* two byte opcode */
-	csp++;
-	switch (*csp) {
-	case 0xa1:		/* pop fs */
-	    len = 2;
-	    *segment = *ssp;
-	    *sreg = fs_INDEX;
-	    break;
-	case 0xa9:		/* pop gs */
-	    len = 2;
-	    *segment = *ssp;
-	    *sreg = gs_INDEX;
-	break;
-	}
-    }
-    return len;
-}
-
-static int
-decode_retf_iret(struct sigcontext_struct *scp, unsigned short *segment,
-    unsigned char * sreg, int decode_use_16bit)
-{
-    unsigned short *ssp;
-    unsigned char *csp;
-    int len;
-
-    csp = (unsigned char *) SEL_ADR(_cs, _eip);
-    ssp = (unsigned short *) SEL_ADR(_ss, _esp);
-    len = 0;
-    switch (*csp) {
-	case 0xca:			/* retf imm16 */
-	case 0xcb:			/* retf */
-	case 0xcf:			/* iret */
-	    len = 1;
-	    _eip = decode_use_16bit ? ssp[0] : ((unsigned int *) ssp)[0];
-	    *segment = decode_use_16bit ? ssp[1] : ((unsigned int *) ssp)[1];
-	    *sreg = cs_INDEX;
-	    _esp += decode_use_16bit ? 4 : 8;
-	    break;
-    }
-    if (!len)
-	return 0;
-
-    switch (*csp) {
-	case 0xca:			/* retf imm16 */
-	    len += 2;
-	    _esp += ((unsigned short *) (csp + 1))[0];
-	    break;
-	case 0xcf:			/* iret */
-	    _eflags = decode_use_16bit ? ssp[2] : ((unsigned int *) ssp)[2];
-	    _esp += decode_use_16bit ? 2 : 4;
-	    break;
-    }
-    if (len)
-	D_printf("MSDOS: retf decoded, seg=0x%x\n", *segment);
-    return len;
-}
-
-static int
-decode_jmp_f(struct sigcontext_struct *scp, unsigned short *segment,
-    unsigned char * sreg, int decode_use_16bit)
-{
-    unsigned short *ssp;
-    unsigned char *csp;
-    int len;
-
-    csp = (unsigned char *) SEL_ADR(_cs, _eip);
-    ssp = (unsigned short *) SEL_ADR(_ss, _esp);
-    len = 0;
-    switch (*csp) {
-	case 0xea:			/* jmp seg:off16/off32 */
-	    len = decode_use_16bit ? 5 : 7;
-	    _eip = decode_use_16bit ? ((unsigned short *)(csp + 1))[0] :
-		((unsigned int *)(csp + 1))[0];
-	    *segment = decode_use_16bit ? ((unsigned short *)(csp + 3))[0] :
-		((unsigned short *)(csp + 5))[0];
-	    *sreg = cs_INDEX;
-	    break;
-    }
-    if (len)
-	D_printf("MSDOS: jmpf decoded, seg=0x%x\n", *segment);
-    return len;
-}
-
-/*
- * decode_modify_segreg_insn tries to decode instructions which would modify a
- * segment register, returns the length of the insn.
- */
-static  int
-decode_modify_segreg_insn(struct sigcontext_struct *scp, unsigned
-			  short *segment, unsigned char *sreg)
-{
-    unsigned char decode_use_16bit;
-    unsigned char *csp;
-    unsigned long cs_desc[2];
-    int len, size_prfix;
-
-    csp = (unsigned char *) SEL_ADR(_cs, _eip);
-    size_prfix = 0;
-    if (GetDescriptor(_cs, cs_desc) < 0)
-	return 0;
-    decode_use_16bit = !((cs_desc[1] >> 22) & 1);
-    if (*csp == 0x66) { /* Operand-Size prefix */
-	csp++;
-	_eip++;
-	decode_use_16bit ^= 1;
-	size_prfix++;
-    }
-	
-    /* first try pop sreg */
-    if ((len = decode_pop_segreg(scp, segment, sreg))) {
-      _esp += decode_use_16bit ? 2 : 4;
-      _eip += len;
-      return len+size_prfix;
-    }
-
-    /* try retf, iret */
-    if ((len = decode_retf_iret(scp, segment, sreg, decode_use_16bit))) {
-      /* eip, esp and eflags are modified! */
-      return len+size_prfix;
-    }
-
-    /* try far jmp */
-    if ((len = decode_jmp_f(scp, segment, sreg, decode_use_16bit))) {
-      /* eip is modified! */
-      return len+size_prfix;
-    }
-
-    return 0;
-}
-	
-    
-#if 0 /* Not USED!  JES 96/01/2x */
-static  int msdos_fix_cs_prefix (struct sigcontext_struct *scp)
-{
-    unsigned char *csp;
-
-    csp = (unsigned char *) SEL_ADR(_cs, _eip);
-    if (*csp != 0x2e)		/* not cs prefix */
-	return 0;
-
-    /* bcc try to something like mov cs:[xx],ax here, we cheat it by */
-    /* using mov gs:[xx],ax instead, hope bcc will never use gs :=( */
-
-    if ((Segments[_cs>>3].type & MODIFY_LDT_CONTENTS_CODE) &&
-	(Segments[(_cs>>3)+1].base_addr == Segments[_cs>>3].base_addr)
-	&&((Segments[(_cs>>3)+1].type & MODIFY_LDT_CONTENTS_CODE)==0)) {
-	    _gs = _cs + 8;
-	    *csp = 0x65;	/* gs prefix */
-	    return 1;
-    }
-    return 0;
-}
-#endif
-
 
 int msdos_fault(struct sigcontext_struct *scp)
 {
     struct sigcontext_struct new_sct;
-    unsigned char reg;
-    unsigned short segment, desc;
-    unsigned long len;
+    int reg;
+    unsigned int segment;
+    unsigned short desc;
 
     D_printf("MSDOS: msdos_fault, err=%#lx\n",_err);
     if ((_err & 0xffff) == 0) {	/*  not a selector error */
@@ -1606,7 +1451,7 @@ int msdos_fault(struct sigcontext_struct *scp)
 	if (*csp == 0x0f) {
 	  if (cpu_trap_0f(csp, scp)) return 1;	/* 1=handled */
 	}
-	
+
 	switch (*csp) {
 	case 0x2e:		/* cs: */
 	    break;		/* do nothing */
@@ -1677,47 +1522,15 @@ int msdos_fault(struct sigcontext_struct *scp)
 	return 0;
 #endif
     }
-    
+
     /* now it is a invalid selector error, try to fix it if it is */
     /* caused by an instruction such as mov Sreg,r/m16            */
 
-    copy_context(&new_sct, scp);
-    len = decode_modify_segreg_insn(&new_sct, &segment, &reg);
+    copy_context(&new_sct, scp, 0);
+    reg = decode_modify_segreg_insn(&new_sct, 1, &segment);
+    if (reg == -1)
+      return 0;
 
-    if (len == 0) {
-	/* simulate one instruction in instremu, and check which
-	   segment register has changed;
-	   pmode==2 means "simulate", count==1
-	*/
-	instr_emu(&new_sct, 2, 1);
-
-	len = new_sct.eip - _eip;
-	if (len == 0)
-	    return 0;
-	reg = 0xff;
-	segment = 0xffff;
-	if (_cs != new_sct.cs) {
-	    reg = cs_INDEX;
-	    segment = new_sct.cs;
-	} else if (_ds != new_sct.ds) {
-	    reg = ds_INDEX;
-	    segment = new_sct.ds;
-	} else if (_es != new_sct.es) {
-	    reg = es_INDEX;
-	    segment = new_sct.es;
-	} else if (_fs != new_sct.fs) {
-	    reg = fs_INDEX;
-	    segment = new_sct.fs;
-	} else if (_gs != new_sct.gs) {
-	    reg = gs_INDEX;
-	    segment = new_sct.gs;
-	} else if (_ss != new_sct.ss) {
-	    reg = ss_INDEX;
-	    segment = new_sct.ss;
-	}
-	if (reg == 0xff)
-	    return 0;
-    }
     if (ValidAndUsedSelector(segment)) {
 	/*
 	 * The selector itself is OK, but the descriptor (type) is not.
@@ -1730,44 +1543,54 @@ int msdos_fault(struct sigcontext_struct *scp)
 
     D_printf("MSDOS: try mov to a invalid selector 0x%04x\n", segment);
 
-#if 0
+#if 1
     /* only allow using some special GTD\'s */
     if ((segment != 0x0040) && (segment != 0xa000) &&
 	(segment != 0xb000) && (segment != 0xb800) &&
 	(segment != 0xc000) && (segment != 0xe000) &&
 	(segment != 0xf000) && (segment != 0xbf8) &&
-	(segment != 0xf800) && (segment != 0xff00))
+	(segment != 0xf800) && (segment != 0xff00) &&
+	(segment != 0x38))
 	return 0;
-#endif    
+#endif
 
-    if (!(desc = (reg != cs_INDEX ? ConvertSegmentToDescriptor_lim(segment, 0xfffff) :
-	ConvertSegmentToCodeDescriptor_lim(segment, 0xfffff))))
+    switch (segment) {
+	case 0x38:
+	    /* dos4gw sets VCPI descriptors 0x28, 0x30, 0x38 */
+	    /* The 0x38 is the "flat data" segment (0,4G) */
+	    desc = ConvertSegmentToDescriptor_lim(0, 0xffffffff);
+	    break;
+	default:
+	    /* any other special cases? */
+	    desc = (reg != cs_INDEX ? ConvertSegmentToDescriptor(segment) :
+		ConvertSegmentToCodeDescriptor(segment));
+    }
+    if (!desc)
 	return 0;
 
     /* OKay, all the sanity checks passed. Now we go and fix the selector */
+    copy_context(scp, &new_sct, 0);
     switch (reg) {
     case es_INDEX:
-	new_sct.es = desc;
+	_es = desc;
 	break;
     case cs_INDEX:
-	new_sct.cs = desc;
+	_cs = desc;
 	break;
     case ss_INDEX:
-	new_sct.ss = desc;
+	_ss = desc;
 	break;
     case ds_INDEX:
-	new_sct.ds = desc;
+	_ds = desc;
 	break;
     case fs_INDEX:
-	new_sct.fs = desc;
+	_fs = desc;
 	break;
     case gs_INDEX:
-	new_sct.gs = desc;
+	_gs = desc;
 	break;
     }
 
-    /* lets hope we fixed the thing, apply the "fix" to context and return */
-    copy_context(scp, &new_sct);
+    /* let's hope we fixed the thing, and return */
     return 1;
 }
-#endif
