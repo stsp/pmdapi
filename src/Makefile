@@ -3,7 +3,7 @@ LD = i586-pc-msdosdjgpp-gcc
 CFLAGS = -Wall
 CPPFLAGS = -DDJGPP_PORT
 LDFLAGS = -Wall
-CFILES = msdos.c wrapper.c emm.c startup.c handlers.c calls.c
+CFILES = msdos.c segreg.c wrapper.c emm.c startup.c handlers.c calls.c
 SFILES = entry.S
 OFILES = $(CFILES:.c=.o) $(SFILES:.S=.o)
 GFILES = asm-offsets.h asm-offsets.s

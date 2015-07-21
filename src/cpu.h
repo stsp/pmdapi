@@ -65,14 +65,26 @@ extern struct vm86_regs regs;
 #define SEG2LINEAR(seg)	((void *)  ( ((unsigned int)(seg)) << 4)  )
 #define SEGOFF2LINEAR(seg, off)  ((((Bit32u)(seg)) << 4) + (off))
 
-#define MEMCPY_DOS2DOS(dos_addr, unix_addr, n) \
-	memcpy((void *)(dos_addr), (void *)(unix_addr), (n))
-#define READ_BYTE(addr)                 (*(Bit8u *) (addr))
-#define WRITE_BYTE(addr, val)           (*(Bit8u *) (addr) = (val) )
-#define READ_WORD(addr)                 (*(Bit16u *) (addr))
-#define WRITE_WORD(addr, val)           (*(Bit16u *) (addr) = (val) )
-#define READ_DWORD(addr)                (*(Bit32u *) (addr))
-#define WRITE_DWORD(addr, val)          (*(Bit32u *) (addr) = (val) )
+#define MEMCPY_DOS2DOS(dos_addr1, dos_addr2, n) \
+	memcpy(LINEAR2UNIX(dos_addr1), LINEAR2UNIX(dos_addr2), (n))
+#define UNIX_READ_BYTE(addr)		(*(Bit8u *) (addr))
+#define UNIX_WRITE_BYTE(addr, val)	(*(Bit8u *) (addr) = (val) )
+#define UNIX_READ_WORD(addr)		(*(Bit16u *) (addr))
+#define UNIX_WRITE_WORD(addr, val)	(*(Bit16u *) (addr) = (val) )
+#define UNIX_READ_DWORD(addr)		(*(Bit32u *) (addr))
+#define UNIX_WRITE_DWORD(addr, val)	(*(Bit32u *) (addr) = (val) )
+#define READ_BYTE(addr)		UNIX_READ_BYTE(LINEAR2UNIX(addr))
+#define WRITE_BYTE(addr, val)	UNIX_WRITE_BYTE(LINEAR2UNIX(addr), val)
+#define READ_WORD(addr)		UNIX_READ_WORD(LINEAR2UNIX(addr))
+#define WRITE_WORD(addr, val)	UNIX_WRITE_WORD(LINEAR2UNIX(addr), val)
+#define READ_DWORD(addr)	UNIX_READ_DWORD(LINEAR2UNIX(addr))
+#define WRITE_DWORD(addr, val)	UNIX_WRITE_DWORD(LINEAR2UNIX(addr), val)
+#define READ_BYTEP(addr)	READ_BYTE(DOSADDR_REL(addr))
+#define WRITE_BYTEP(addr, val)	WRITE_BYTE(DOSADDR_REL(addr), val)
+#define READ_WORDP(addr)	READ_WORD(DOSADDR_REL(addr))
+#define WRITE_WORDP(addr, val)	WRITE_WORD(DOSADDR_REL(addr), val)
+#define READ_DWORDP(addr)	READ_DWORD(DOSADDR_REL(addr))
+#define WRITE_DWORDP(addr, val)	WRITE_DWORD(DOSADDR_REL(addr), val)
 
 #define u_short unsigned short
 #define Bit16u unsigned short

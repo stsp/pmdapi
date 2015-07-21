@@ -98,7 +98,7 @@ unsigned long GetSegmentLimit(unsigned short selector)
   return lim;
 }
 
-int SegmentIs32(unsigned short selector)
+int dpmi_mhp_get_selector_size(int selector)
 {
   int lar = __dpmi_get_descriptor_access_rights(selector);
   return lar & 0x4000;

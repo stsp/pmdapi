@@ -1,4 +1,4 @@
-/* 
+/*
  * (C) Copyright 1992, ..., 2004 the "DOSEMU-Development-Team".
  *
  * for details see file COPYING in the DOSEMU distribution
@@ -9,6 +9,8 @@
 #define DPMI_H
 
 #include <dpmi.h>
+#include <stdint.h>
+#include <stddef.h>
 #include "sigcontext.h"
 #include "cpu.h"
 #include "vm86.h"
@@ -65,7 +67,7 @@ extern int SetSegmentBaseAddress(unsigned short selector,
 unsigned long GetSegmentBaseAddress(unsigned short);
 unsigned long GetSegmentLimit(unsigned short);
 extern unsigned int GetSegmentBase(unsigned short);
-int SegmentIs32(unsigned short);
+int dpmi_mhp_get_selector_size(int sel);
 extern int SetSegmentLimit(unsigned short, unsigned int);
 extern unsigned short AllocateDescriptors(int);
 extern int FreeDescriptor(unsigned short selector);
@@ -136,6 +138,10 @@ static inline unsigned char *MEM_BASE32(dosaddr_t a)
 {
     uint32_t off = (uint32_t)(ptrdiff_t)(mem_base + a);
     return LINP(off);
+}
+static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
+{
+    return (a - mem_base);
 }
 
 #endif /* DPMI_H */
