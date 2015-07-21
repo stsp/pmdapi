@@ -101,7 +101,7 @@ unsigned long GetSegmentLimit(unsigned short selector)
 int dpmi_mhp_get_selector_size(int selector)
 {
   int lar = __dpmi_get_descriptor_access_rights(selector);
-  return lar & 0x4000;
+  return !!(lar & 0x4000);
 }
 
 int SetSegmentLimit(unsigned short selector, unsigned int limit)
@@ -239,10 +239,4 @@ unsigned short dpmi_sel(void)
 
 void fake_call_to(int cs, int ip)
 {
-}
-
-int decode_modify_segreg_insn(struct sigcontext_struct *scp, int pmode,
-    unsigned int *new_val)
-{
-  return 0;
 }

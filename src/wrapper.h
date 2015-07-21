@@ -74,8 +74,6 @@ extern int FreeDescriptor(unsigned short selector);
 extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
 extern void copy_context(struct sigcontext_struct *d,
     struct sigcontext_struct *s, int copy_fpu);
-int decode_modify_segreg_insn(struct sigcontext_struct *scp, int pmode,
-    unsigned int *new_val);
 
 void *SEL_ADR(unsigned short sel, unsigned int reg);
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
