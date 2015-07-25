@@ -3,9 +3,6 @@
 
 #include <stdint.h>
 
-extern struct vm86_regs regs;
-#define REG(reg) (regs.reg)
-
 typedef int                Boolean;
 typedef uint8_t            Bit8u;   /* type of 8 bit unsigned quantity */
 typedef  int8_t            Bit8s;   /* type of 8 bit signed quantity */
@@ -37,10 +34,6 @@ union dword {
 
 #define _LO(reg) (*(unsigned char *)&(scp->e##reg))
 #define _HI(reg) (*((unsigned char *)&(scp->e##reg) + 1))
-
-/* these are used like: LWORD(eax) = 65535 (sets ax to 65535) */
-#define LWORD(reg)	(*((unsigned short *)&REG(reg)))
-#define HWORD(reg)	(*((unsigned short *)&REG(reg) + 1))
 
 #define _LWORD(reg)	(*((unsigned short *)&(scp->reg)))
 #define _HWORD(reg)	(*((unsigned short *)&(scp->reg) + 1))
@@ -89,8 +82,6 @@ union dword {
 #define VIP VIP_MASK
 #define ID  ID_MASK
 
-/* this is used like: SEG_ADR((char *), es, bx) */
-#define SEG_ADR(type, seg, reg)  type((LWORD(seg) << 4) + LWORD(e##reg))
 #define MK_FARt(seg, off) ((far_t){(off), (seg)})
 #define SEG2LINEAR(seg)	((void *)  ( ((unsigned int)(seg)) << 4)  )
 #define SEGOFF2LINEAR(seg, off)  ((((Bit32u)(seg)) << 4) + (off))
@@ -117,7 +108,5 @@ union dword {
 #define WRITE_DWORDP(addr, val)	WRITE_DWORD(DOSADDR_REL(addr), val)
 
 #define u_short unsigned short
-#define Bit16u unsigned short
-#define Bit32u unsigned long
 
 #endif

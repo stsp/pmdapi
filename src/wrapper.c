@@ -4,11 +4,9 @@
 #include <stdint.h>
 #include "sigcontext.h"
 #include "cpu.h"
-#include "vm86.h"
 #include "entry.h"
 #include "wrapper.h"
 
-struct vm86_regs regs;
 typedef struct segment_descriptor_s
 {
     unsigned int	base_addr;	/* Pointer to segment in flat memory */

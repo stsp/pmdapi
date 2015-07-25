@@ -13,7 +13,6 @@
 #include <stddef.h>
 #include "sigcontext.h"
 #include "cpu.h"
-#include "vm86.h"
 
 typedef struct {
   unsigned short offset;
