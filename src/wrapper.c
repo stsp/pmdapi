@@ -240,3 +240,49 @@ unsigned short dpmi_sel(void)
 void fake_call_to(int cs, int ip)
 {
 }
+
+#define DPMI_max_rec_pm_func 16
+static struct sigcontext_struct DPMI_pm_stack[DPMI_max_rec_pm_func];
+static int DPMI_pm_procedure_running = 0;
+
+void save_pm_regs(struct sigcontext_struct *scp)
+{
+  if (DPMI_pm_procedure_running >= DPMI_max_rec_pm_func) {
+    error("DPMI: DPMI_pm_procedure_running = 0x%x\n",DPMI_pm_procedure_running);
+//    leavedos(25);
+    return;
+  }
+//  _eflags = eflags_VIF(_eflags);
+  copy_context(&DPMI_pm_stack[DPMI_pm_procedure_running++], scp, 0);
+}
+
+void restore_pm_regs(struct sigcontext_struct *scp)
+{
+  if (DPMI_pm_procedure_running > DPMI_max_rec_pm_func ||
+    DPMI_pm_procedure_running < 1) {
+    error("DPMI: DPMI_pm_procedure_running = 0x%x\n",DPMI_pm_procedure_running);
+//    leavedos(25);
+    return;
+  }
+  copy_context(scp, &DPMI_pm_stack[--DPMI_pm_procedure_running], -1);
+#if 0
+  if (_eflags & VIF) {
+    if (!isset_IF())
+      D_printf("DPMI: set IF on restore_pm_regs\n");
+    set_IF();
+  } else {
+    if (isset_IF())
+      D_printf("DPMI: clear IF on restore_pm_regs\n");
+    clear_IF();
+  }
+#endif
+}
+
+void lrhlp_setup(void)
+{
+}
+
+u_short DPMI_ldt_alias(void)
+{
+  return 0;
+}

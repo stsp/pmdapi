@@ -32,7 +32,7 @@ typedef uint32_t dosaddr_t;
 
 enum { es_INDEX, cs_INDEX, ss_INDEX, ds_INDEX, fs_INDEX, gs_INDEX,
   eax_INDEX, ebx_INDEX, ecx_INDEX, edx_INDEX, esi_INDEX, edi_INDEX,
-  ebp_INDEX, esp_INDEX };
+  ebp_INDEX, esp_INDEX, eip_INDEX, eflags_INDEX };
 
 typedef __dpmi_paddr DPMI_INTDESC;
 struct pmaddr_s
@@ -48,6 +48,27 @@ typedef struct dpmi_pm_block_stuct {
   u_short  *attrs;
   int linear;
 } dpmi_pm_block;
+
+struct RealModeCallStructure {
+  unsigned int edi;
+  unsigned int esi;
+  unsigned int ebp;
+  unsigned int esp_reserved;
+  unsigned int ebx;
+  unsigned int edx;
+  unsigned int ecx;
+  unsigned int eax;
+  unsigned short flags;
+  unsigned short es;
+  unsigned short ds;
+  unsigned short fs;
+  unsigned short gs;
+  unsigned short ip;
+  unsigned short cs;
+  unsigned short sp;
+  unsigned short ss;
+} __attribute__((packed));
+
 int ValidAndUsedSelector(unsigned short selector);
 
 extern int ConvertSegmentToDescriptor(unsigned short segment);
@@ -74,13 +95,12 @@ extern int FreeDescriptor(unsigned short selector);
 extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
 extern void copy_context(struct sigcontext_struct *d,
     struct sigcontext_struct *s, int copy_fpu);
+extern void save_pm_regs(struct sigcontext_struct *);
+extern void restore_pm_regs(struct sigcontext_struct *);
 
 void *SEL_ADR(unsigned short sel, unsigned int reg);
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
-
-void fake_int_to(int cs, int ip);
-void set_io_buffer(char *ptr, unsigned int size);
-void unset_io_buffer(void);
+u_short DPMI_ldt_alias(void);
 
 extern void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask);
 extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
@@ -90,6 +110,31 @@ void fake_call_to(int cs, int ip);
 
 extern unsigned char *sda;
 u_short sda_cur_psp(unsigned char *sda);
+
+#define pushw(base, ptr, val) \
+	do { \
+		ptr = (Bit16u)(ptr - 1); \
+		WRITE_BYTE((base) + ptr, (val) >> 8); \
+		ptr = (Bit16u)(ptr - 1); \
+		WRITE_BYTE((base) + ptr, val); \
+	} while(0)
+
+#define popb(base, ptr) \
+	({ \
+		Bit8u __res = READ_BYTE((base) + ptr); \
+		ptr = (Bit16u)(ptr + 1); \
+		__res; \
+	})
+
+#define popw(base, ptr) \
+	({ \
+		Bit8u __res0, __res1; \
+		__res0 = READ_BYTE((base) + ptr); \
+		ptr = (Bit16u)(ptr + 1); \
+		__res1 = READ_BYTE((base) + ptr); \
+		ptr = (Bit16u)(ptr + 1); \
+		(__res1 << 8) | __res0; \
+	})
 
 #define DPMI_SEG 0
 #define DPMI_OFF 0
@@ -102,6 +147,7 @@ u_short sda_cur_psp(unsigned char *sda);
 #define DOS_LONG_WRITE_SEG 0
 #define DOS_LONG_WRITE_OFF 0
 #define MSDOS_XMS_call 0
+#define MSDOS_API_call 0
 #define DPMI_sel_code_start 0
 #define DPMI_SEL_OFF(x) (x-DPMI_sel_code_start)
 #define _CS 0
@@ -109,6 +155,7 @@ u_short sda_cur_psp(unsigned char *sda);
 #define MSDOS_return_from_pm 0
 
 #define D_printf(...)
+#define g_printf(...)
 #define error(...)
 #define dosemu_error(...)
 #define snprintf(a,b,c,d) sprintf(a,c,d)

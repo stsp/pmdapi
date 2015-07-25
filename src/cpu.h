@@ -1,8 +1,35 @@
 #ifndef CPU_H
 #define CPU_H
 
+#include <stdint.h>
+
 extern struct vm86_regs regs;
 #define REG(reg) (regs.reg)
+
+typedef int                Boolean;
+typedef uint8_t            Bit8u;   /* type of 8 bit unsigned quantity */
+typedef  int8_t            Bit8s;   /* type of 8 bit signed quantity */
+typedef uint16_t           Bit16u;  /* type of 16 bit unsigned quantity */
+typedef   int16_t          Bit16s;  /* type of 16 bit signed quantity */
+typedef uint32_t           Bit32u;  /* type of 32 bit unsigned quantity */
+typedef  int32_t           Bit32s;  /* type of 32 bit signed quantity */
+typedef uint64_t           Bit64u;  /* type of 64 bit unsigned quantity */
+typedef  int64_t           Bit64s;  /* type of 64 bit signed quantity */
+typedef unsigned           Bitu;
+typedef int                Bits;
+
+#define MAY_ALIAS __attribute__((may_alias))
+
+union dword {
+  unsigned long l;
+  Bit32u d;
+#ifdef __x86_64__
+  struct { Bit16u l, h, w2, w3; } w;
+#else
+  struct { Bit16u l, h; } w;
+#endif
+  struct { Bit8u l, h, b2, b3; } b;
+} MAY_ALIAS ;
 
 /* these are used like:  LO(ax) = 2 (sets al to 2) */
 #define LO(reg)  (*(unsigned char *)&REG(e##reg))
@@ -18,8 +45,11 @@ extern struct vm86_regs regs;
 #define _LWORD(reg)	(*((unsigned short *)&(scp->reg)))
 #define _HWORD(reg)	(*((unsigned short *)&(scp->reg) + 1))
 
-#define LO_WORD(wrd)	(*((unsigned short *)&(wrd)))
-#define HI_WORD(wrd)	(*((unsigned short *)&(wrd) + 1))
+#define LO_WORD(wrd)	(((union dword *)&(wrd))->w.l)
+#define HI_WORD(wrd)    (((union dword *)&(wrd))->w.h)
+
+#define LO_BYTE(wrd)	(((union dword *)&(wrd))->b.l)
+#define HI_BYTE(wrd)    (((union dword *)&(wrd))->b.h)
 
 #define _gs     (scp->gs)
 #define _fs     (scp->fs)
