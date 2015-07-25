@@ -107,9 +107,6 @@ extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
 extern unsigned short dpmi_sel(void);
 void fake_call_to(int cs, int ip);
 
-extern unsigned char *sda;
-u_short sda_cur_psp(unsigned char *sda);
-
 #define pushw(base, ptr, val) \
 	do { \
 		ptr = (Bit16u)(ptr - 1); \
@@ -187,5 +184,7 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 {
     return (a - mem_base);
 }
+
+u_short dos_get_psp(void);
 
 #endif /* DPMI_H */

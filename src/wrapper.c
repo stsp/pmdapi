@@ -25,7 +25,6 @@ typedef struct segment_descriptor_s
 #define MAX_SELECTORS   LDT_ENTRIES
 static SEGDESC Segments[MAX_SELECTORS];
 
-unsigned char *sda;
 unsigned char *mem_base;
 
 int ValidAndUsedSelector(unsigned short selector)
@@ -225,11 +224,6 @@ void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask)
 {
 }
 
-u_short sda_cur_psp(unsigned char *sda)
-{
-  return 0;
-}
-
 unsigned short dpmi_sel(void)
 {
   return 0;
@@ -281,6 +275,11 @@ void lrhlp_setup(void)
 }
 
 u_short DPMI_ldt_alias(void)
+{
+  return 0;
+}
+
+u_short dos_get_psp(void)
 {
   return 0;
 }
