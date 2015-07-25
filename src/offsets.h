@@ -2,7 +2,6 @@
 #define __OFFSETS_H
 
 #include <sys/types.h>
-#include "stddef.h"
 
 #define DEFINE(sym, val) \
         asm volatile("\n->" #sym " %0 " #val : : "i" (val))

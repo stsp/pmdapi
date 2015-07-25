@@ -1,6 +1,5 @@
 #include <dpmi.h>
 #include <stdlib.h>
-#include <stddef.h>
 #include <stdint.h>
 #include "sigcontext.h"
 #include "cpu.h"

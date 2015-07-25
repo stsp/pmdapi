@@ -1,5 +1,4 @@
 #include <dpmi.h>
-#include "stddef.h"
 #include "sigcontext.h"
 #include "calls.h"
 
