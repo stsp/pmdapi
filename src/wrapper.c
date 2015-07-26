@@ -273,6 +273,10 @@ void lrhlp_setup(void)
 {
 }
 
+void lrhlp_reset(void)
+{
+}
+
 u_short DPMI_ldt_alias(void)
 {
   return 0;
