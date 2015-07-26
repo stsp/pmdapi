@@ -1,16 +1,17 @@
 #include "cpu.h"
 #include "emm.h"
 
-int emm_get_partial_map_registers(void *ptr, const u_short *segs)
+int emm_allocate_handle(int pages_needed)
 {
   return 0;
 }
 
-void emm_set_partial_map_registers(const void *ptr)
+int emm_save_handle_state(int handle)
 {
+  return 0;
 }
 
-int emm_get_size_for_partial_page_map(int pages)
+int emm_restore_handle_state(int handle)
 {
   return 0;
 }
