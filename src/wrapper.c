@@ -4,6 +4,7 @@
 #include "sigcontext.h"
 #include "cpu.h"
 #include "entry.h"
+#include "lrhlp.h"
 #include "wrapper.h"
 
 typedef struct segment_descriptor_s
@@ -228,6 +229,11 @@ unsigned short dpmi_sel(void)
   return 0;
 }
 
+unsigned short dpmi_data_sel(void)
+{
+  return 0;
+}
+
 void fake_call_to(int cs, int ip)
 {
 }
@@ -269,15 +275,23 @@ void restore_pm_regs(struct sigcontext_struct *scp)
 #endif
 }
 
-void lrhlp_setup(void)
-{
-}
-
-void lrhlp_reset(void)
+void lrhlp_setup(far_t rmcb, int is_w)
 {
 }
 
 u_short DPMI_ldt_alias(void)
+{
+  return 0;
+}
+
+far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
+	int rm_offs)
+{
+  far_t ret = {};
+  return ret;
+}
+
+int DPMI_free_realmode_callback(u_short seg, u_short off)
 {
   return 0;
 }

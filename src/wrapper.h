@@ -14,11 +14,6 @@
 #include "sigcontext.h"
 #include "cpu.h"
 
-typedef struct {
-  unsigned short offset;
-  unsigned short segment;
-} far_t;
-
 typedef unsigned short us;
 typedef uint32_t dosaddr_t;
 
@@ -92,6 +87,10 @@ extern int SetSegmentLimit(unsigned short, unsigned int);
 extern unsigned short AllocateDescriptors(int);
 extern int FreeDescriptor(unsigned short selector);
 extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
+extern far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
+	int rm_offs);
+extern int DPMI_free_realmode_callback(u_short seg, u_short off);
+
 extern void copy_context(struct sigcontext_struct *d,
     struct sigcontext_struct *s, int copy_fpu);
 extern void save_pm_regs(struct sigcontext_struct *);
@@ -105,6 +104,7 @@ extern void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask);
 extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
 
 extern unsigned short dpmi_sel(void);
+extern unsigned short dpmi_data_sel(void);
 void fake_call_to(int cs, int ip);
 
 #define pushw(base, ptr, val) \
@@ -144,8 +144,12 @@ void fake_call_to(int cs, int ip);
 #define DOS_LONG_WRITE_OFF 0
 #define MSDOS_XMS_call 0
 #define MSDOS_API_call 0
+#define MSDOS_rmcb_call 0
+#define MSDOS_rmcb_data 0
 #define DPMI_sel_code_start 0
+#define DPMI_sel_data_start 0
 #define DPMI_SEL_OFF(x) (x-DPMI_sel_code_start)
+#define DPMI_DATA_OFF(x) (x-DPMI_sel_data_start)
 #define _CS 0
 #define _IP 0
 #define MSDOS_return_from_pm 0

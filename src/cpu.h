@@ -109,4 +109,9 @@ union dword {
 
 #define u_short unsigned short
 
+typedef struct {
+  u_short offset;
+  u_short segment;
+} far_t;
+
 #endif
