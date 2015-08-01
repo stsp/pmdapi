@@ -190,5 +190,6 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 }
 
 u_short dos_get_psp(void);
+void lrhlp_setup(far_t rmcb, int is_w);
 
 #endif /* DPMI_H */
