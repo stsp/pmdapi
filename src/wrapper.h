@@ -136,21 +136,13 @@ void fake_call_to(int cs, int ip);
 #define DPMI_OFF 0
 #define DPMI_ADD 0
 #define HLT_OFF(x) 0
-#define EMM_SEGMENT 0
-#define DTA_Para_ADD 0
 #define DOS_LONG_READ_SEG 0
 #define DOS_LONG_READ_OFF 0
 #define DOS_LONG_WRITE_SEG 0
 #define DOS_LONG_WRITE_OFF 0
 #define MSDOS_XMS_call 0
-#define MSDOS_API_call 0
-#define MSDOS_rmcb_call 0
 #define DPMI_sel_code_start 0
-#define DPMI_sel_data_start 0
 #define DPMI_SEL_OFF(x) (x-DPMI_sel_code_start)
-#define DPMI_DATA_OFF(x) (x-DPMI_sel_data_start)
-#define _CS 0
-#define _IP 0
 #define MSDOS_return_from_pm 0
 
 #define D_printf(...)
@@ -190,5 +182,6 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 
 u_short dos_get_psp(void);
 void lrhlp_setup(far_t rmcb, int is_w);
+struct pmaddr_s register_api_call(void (*handler)(struct sigcontext *));
 
 #endif /* DPMI_H */

@@ -299,3 +299,9 @@ u_short dos_get_psp(void)
 {
   return 0;
 }
+
+struct pmaddr_s register_api_call(void (*handler)(struct sigcontext *))
+{
+    struct pmaddr_s ret = {};
+    return ret;
+}
