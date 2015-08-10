@@ -1,4 +1,5 @@
 #include "asm-offsets.h"
+#include "entry.h"
 
 #define stack_size 0x4000
 
@@ -201,9 +202,6 @@ _cs32_desc:
 .globl _ds32_desc
 _ds32_desc:
 .long 0,0
-.globl _dseg32
-_dseg32:
-.long 0
 .globl _is_32
 _is_32:
 .long 1
