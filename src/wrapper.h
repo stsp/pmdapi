@@ -87,8 +87,8 @@ extern int SetSegmentLimit(unsigned short, unsigned int);
 extern unsigned short AllocateDescriptors(int);
 extern int FreeDescriptor(unsigned short selector);
 extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
-extern far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
-	int rm_offs);
+extern far_t allocate_realmode_callback(void (*handler)(
+	struct RealModeCallStructure *));
 extern int DPMI_free_realmode_callback(u_short seg, u_short off);
 
 extern void copy_context(struct sigcontext_struct *d,
@@ -145,7 +145,6 @@ void fake_call_to(int cs, int ip);
 #define MSDOS_XMS_call 0
 #define MSDOS_API_call 0
 #define MSDOS_rmcb_call 0
-#define MSDOS_rmcb_data 0
 #define DPMI_sel_code_start 0
 #define DPMI_sel_data_start 0
 #define DPMI_SEL_OFF(x) (x-DPMI_sel_code_start)

@@ -283,8 +283,8 @@ u_short DPMI_ldt_alias(void)
   return 0;
 }
 
-far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
-	int rm_offs)
+far_t allocate_realmode_callback(void (*handler)(
+	struct RealModeCallStructure *))
 {
   far_t ret = {};
   return ret;
