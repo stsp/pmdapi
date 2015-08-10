@@ -4,7 +4,6 @@
 #include "sigcontext.h"
 #include "cpu.h"
 #include "entry.h"
-#include "lrhlp.h"
 #include "wrapper.h"
 
 typedef struct segment_descriptor_s
