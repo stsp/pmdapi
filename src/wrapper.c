@@ -187,18 +187,6 @@ void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32)
   return SEL_ADR_LDT(sel, reg, is_32);
 }
 
-void fake_int_to(int cs, int ip)
-{
-}
-
-void set_io_buffer(char *ptr, unsigned int size)
-{
-}
-
-void unset_io_buffer(void)
-{
-}
-
 void GetFreeMemoryInformation(unsigned int *lp)
 {
 }
@@ -213,28 +201,6 @@ unsigned int GetSegmentBase(unsigned short selector)
   if (!ValidAndUsedSelector(selector))
     return 0;
   return Segments[selector >> 3].base_addr;
-}
-
-void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask)
-{
-}
-
-void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask)
-{
-}
-
-unsigned short dpmi_sel(void)
-{
-  return 0;
-}
-
-unsigned short dpmi_data_sel(void)
-{
-  return 0;
-}
-
-void fake_call_to(int cs, int ip)
-{
 }
 
 #define DPMI_max_rec_pm_func 16
@@ -300,8 +266,22 @@ u_short dos_get_psp(void)
   return 0;
 }
 
-struct pmaddr_s register_api_call(void (*handler)(struct sigcontext *))
+struct pmaddr_s get_pm_handler(void (*handler)(struct sigcontext *))
 {
-    struct pmaddr_s ret = {};
-    return ret;
+  struct pmaddr_s ret = {};
+  return ret;
+}
+
+far_t get_rm_handler(int (*handler)(struct sigcontext *,
+	const struct RealModeCallStructure *))
+{
+  far_t ret = {};
+  return ret;
+}
+
+struct pmaddr_s get_pmrm_handler(void (*handler)(
+	struct RealModeCallStructure *))
+{
+  struct pmaddr_s ret = {};
+  return ret;
 }

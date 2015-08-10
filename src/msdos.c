@@ -74,7 +74,12 @@ static char *io_buffer;
 static int io_buffer_size;
 
 static void rmcb_handler(struct RealModeCallStructure *rmreg);
-static void msdos_api_call(struct sigcontext_struct *scp);
+static void msdos_api_call(struct sigcontext *scp);
+static int mouse_callback(struct sigcontext *scp,
+		 const struct RealModeCallStructure *rmreg);
+static int ps2_mouse_callback(struct sigcontext *scp,
+		 const struct RealModeCallStructure *rmreg);
+static void xms_call(struct RealModeCallStructure *rmreg);
 
 static void set_io_buffer(char *ptr, unsigned int size)
 {
@@ -129,10 +134,45 @@ static far_t allocate_realmode_callback(void (*handler)(
 	    DPMI_DATA_OFF(MSDOS_rmcb_data));
 }
 
-static struct pmaddr_s register_api_call(void (*handler)(struct sigcontext *))
+static struct pmaddr_s get_pm_handler(void (*handler)(struct sigcontext *))
 {
-    return (struct pmaddr_s){ .selector = dpmi_sel(),
-	    .offset = DPMI_SEL_OFF(MSDOS_API_call) };
+    struct pmaddr_s ret = {};
+    if (handler == msdos_api_call) {
+	ret.selector = dpmi_sel();
+	ret.offset = DPMI_SEL_OFF(MSDOS_API_call);
+    } else {
+	dosemu_error("unknown pm handler\n");
+    }
+    return ret;
+}
+
+static struct pmaddr_s get_pmrm_handler(void (*handler)(
+	struct RealModeCallStructure *))
+{
+    struct pmaddr_s ret = {};
+    if (handler == xms_call) {
+	ret.selector = dpmi_sel();
+	ret.offset = DPMI_SEL_OFF(MSDOS_XMS_call);
+    } else {
+	dosemu_error("unknown pmrm handler\n");
+    }
+    return ret;
+}
+
+static far_t get_rm_handler(int (*handler)(struct sigcontext *,
+	const struct RealModeCallStructure *))
+{
+    far_t ret = {};
+    if (handler == mouse_callback) {
+	ret.segment = DPMI_SEG;
+	ret.offset = DPMI_OFF + HLT_OFF(MSDOS_mouse_callback);
+    } else if (handler == ps2_mouse_callback) {
+	ret.segment = DPMI_SEG;
+	ret.offset = DPMI_OFF + HLT_OFF(MSDOS_PS2_mouse_callback);
+    } else {
+	dosemu_error("unknown rm handler\n");
+    }
+    return ret;
 }
 #endif
 
@@ -267,7 +307,7 @@ static void get_ext_API(struct sigcontext_struct *scp)
     D_printf("MSDOS: GetVendorAPIEntryPoint: %s\n", ptr);
     if ((!strcmp("WINOS2", ptr)) || (!strcmp("MS-DOS", ptr))) {
 	_LO(ax) = 0;
-	pma = register_api_call(msdos_api_call);
+	pma = get_pm_handler(msdos_api_call);
 	_es = pma.selector;
 	_edi = pma.offset;
 	_eflags &= ~CF;
@@ -532,14 +572,15 @@ static int _msdos_pre_extender(struct sigcontext_struct *scp, int intr,
 	    switch (_LO(ax)) {
 	    case 0x07:		/* set handler addr */
 		if (_es && D_16_32(_ebx)) {
+		    far_t rma;
 		    D_printf
 			("MSDOS: PS2MOUSE: set handler addr 0x%x:0x%x\n",
 			 _es, D_16_32(_ebx));
 		    MSDOS_CLIENT.PS2mouseCallBack.selector = _es;
 		    MSDOS_CLIENT.PS2mouseCallBack.offset = D_16_32(_ebx);
-		    SET_RMREG(es, DPMI_SEG);
-		    SET_RMREG(ebx,
-			DPMI_OFF + HLT_OFF(MSDOS_PS2_mouse_callback));
+		    rma = get_rm_handler(ps2_mouse_callback);
+		    SET_RMREG(es, rma.segment);
+		    SET_RMREG(ebx, rma.offset);
 		} else {
 		    D_printf("MSDOS: PS2MOUSE: reset handler addr\n");
 		    SET_RMREG(es, 0);
@@ -1109,9 +1150,11 @@ static int _msdos_pre_extender(struct sigcontext_struct *scp, int intr,
 		MSDOS_CLIENT.mouseCallBack.selector = _es;
 		MSDOS_CLIENT.mouseCallBack.offset = D_16_32(_edx);
 		if (_es) {
+		    far_t rma;
 		    D_printf("MSDOS: set mouse callback\n");
-		    SET_RMREG(es, DPMI_SEG);
-		    SET_RMREG(edx, DPMI_OFF + HLT_OFF(MSDOS_mouse_callback));
+		    rma = get_rm_handler(mouse_callback);
+		    SET_RMREG(es, rma.segment);
+		    SET_RMREG(edx, rma.offset);
 		} else {
 		    D_printf("MSDOS: reset mouse callback\n");
 		    SET_RMREG(es, 0);
@@ -1252,11 +1295,14 @@ static int _msdos_post_extender(struct sigcontext_struct *scp, int intr,
 	break;
     case 0x2f:
 	switch (ax) {
-	case 0x4310:
+	case 0x4310: {
+	    struct pmaddr_s pma;
 	    MSDOS_CLIENT.XMS_call = MK_FARt(RMREG(es), RMLWORD(ebx));
-	    SET_REG(es, dpmi_sel());
-	    SET_REG(ebx, DPMI_SEL_OFF(MSDOS_XMS_call));
+	    pma = get_pmrm_handler(xms_call);
+	    SET_REG(es, pma.selector);
+	    SET_REG(ebx, pma.offset);
 	    break;
+	}
 	}
 	break;
 
@@ -1557,78 +1603,96 @@ int msdos_post_extender(struct sigcontext_struct *scp, int intr,
     return _msdos_post_extender(scp, intr, pop_v(), rmreg);
 }
 
+static int mouse_callback(struct sigcontext_struct *scp,
+		 const struct RealModeCallStructure *rmreg)
+{
+    void *sp = SEL_ADR_CLNT(_ss, _esp, MSDOS_CLIENT.is_32);
+    if (!ValidAndUsedSelector(MSDOS_CLIENT.mouseCallBack.selector)) {
+	D_printf("MSDOS: ERROR: mouse callback to unused segment\n");
+	return 0;
+    }
+    D_printf("MSDOS: starting mouse callback\n");
+
+    if (MSDOS_CLIENT.is_32) {
+	unsigned int *ssp = sp;
+	*--ssp = _cs;
+	*--ssp = _eip;
+	_esp -= 8;
+    } else {
+	unsigned short *ssp = sp;
+	*--ssp = _cs;
+	*--ssp = _LWORD(eip);
+	_LWORD(esp) -= 4;
+    }
+
+    _ds = ConvertSegmentToDescriptor(RMREG(ds));
+    _cs = MSDOS_CLIENT.mouseCallBack.selector;
+    _eip = MSDOS_CLIENT.mouseCallBack.offset;
+
+    return 1;
+}
+
+static int ps2_mouse_callback(struct sigcontext_struct *scp,
+		 const struct RealModeCallStructure *rmreg)
+{
+    unsigned short *rm_ssp;
+    void *sp = SEL_ADR_CLNT(_ss, _esp, MSDOS_CLIENT.is_32);
+    if (!ValidAndUsedSelector(MSDOS_CLIENT.PS2mouseCallBack.selector)) {
+	D_printf("MSDOS: ERROR: PS2 mouse callback to unused segment\n");
+	return 0;
+    }
+    D_printf("MSDOS: starting PS2 mouse callback\n");
+
+    rm_ssp = MK_FP32(RMREG(ss), RMREG(sp) + 4 + 8);
+    if (MSDOS_CLIENT.is_32) {
+	unsigned int *ssp = sp;
+	*--ssp = *--rm_ssp;
+	D_printf("data: 0x%x ", *ssp);
+	*--ssp = *--rm_ssp;
+	D_printf("0x%x ", *ssp);
+	*--ssp = *--rm_ssp;
+	D_printf("0x%x ", *ssp);
+	*--ssp = *--rm_ssp;
+	D_printf("0x%x\n", *ssp);
+	*--ssp = _cs;
+	*--ssp = _eip;
+	_esp -= 24;
+    } else {
+	unsigned short *ssp = sp;
+	*--ssp = *--rm_ssp;
+	D_printf("data: 0x%x ", *ssp);
+	*--ssp = *--rm_ssp;
+	D_printf("0x%x ", *ssp);
+	*--ssp = *--rm_ssp;
+	D_printf("0x%x ", *ssp);
+	*--ssp = *--rm_ssp;
+	D_printf("0x%x\n", *ssp);
+	*--ssp = _cs;
+	*--ssp = _LWORD(eip);
+	_LWORD(esp) -= 12;
+    }
+
+    _cs = MSDOS_CLIENT.PS2mouseCallBack.selector;
+    _eip = MSDOS_CLIENT.PS2mouseCallBack.offset;
+
+    return 1;
+}
+
+#ifdef DOSEMU
 int msdos_pre_rm(struct sigcontext_struct *scp,
 		 const struct RealModeCallStructure *rmreg)
 {
+    int ret = 0;
     unsigned int lina = SEGOFF2LINEAR(RMREG(cs), RMREG(ip)) - 1;
-    void *sp = SEL_ADR_CLNT(_ss, _esp, MSDOS_CLIENT.is_32);
 
-    if (lina == DPMI_ADD + HLT_OFF(MSDOS_mouse_callback)) {
-	if (!ValidAndUsedSelector(MSDOS_CLIENT.mouseCallBack.selector)) {
-	    D_printf("MSDOS: ERROR: mouse callback to unused segment\n");
-	    return 0;
-	}
-	D_printf("MSDOS: starting mouse callback\n");
-	_ds = ConvertSegmentToDescriptor(RMREG(ds));
-	_cs = MSDOS_CLIENT.mouseCallBack.selector;
-	_eip = MSDOS_CLIENT.mouseCallBack.offset;
+    if (lina == DPMI_ADD + HLT_OFF(MSDOS_mouse_callback))
+	ret = mouse_callback(scp, rmreg);
+    else if (lina == DPMI_ADD + HLT_OFF(MSDOS_PS2_mouse_callback))
+	ret = ps2_mouse_callback(scp, rmreg);
 
-	if (MSDOS_CLIENT.is_32) {
-	    unsigned int *ssp = sp;
-	    *--ssp = dpmi_sel();
-	    *--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
-	    _esp -= 8;
-	} else {
-	    unsigned short *ssp = sp;
-	    *--ssp = dpmi_sel();
-	    *--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
-	    _LWORD(esp) -= 4;
-	}
-
-    } else if (lina == DPMI_ADD + HLT_OFF(MSDOS_PS2_mouse_callback)) {
-	unsigned short *rm_ssp;
-	if (!ValidAndUsedSelector(MSDOS_CLIENT.PS2mouseCallBack.selector)) {
-	    D_printf
-		("MSDOS: ERROR: PS2 mouse callback to unused segment\n");
-	    return 0;
-	}
-	D_printf("MSDOS: starting PS2 mouse callback\n");
-
-	_cs = MSDOS_CLIENT.PS2mouseCallBack.selector;
-	_eip = MSDOS_CLIENT.PS2mouseCallBack.offset;
-
-	rm_ssp = MK_FP32(RMREG(ss), RMREG(sp) + 4 + 8);
-
-	if (MSDOS_CLIENT.is_32) {
-	    unsigned int *ssp = sp;
-	    *--ssp = *--rm_ssp;
-	    D_printf("data: 0x%x ", *ssp);
-	    *--ssp = *--rm_ssp;
-	    D_printf("0x%x ", *ssp);
-	    *--ssp = *--rm_ssp;
-	    D_printf("0x%x ", *ssp);
-	    *--ssp = *--rm_ssp;
-	    D_printf("0x%x\n", *ssp);
-	    *--ssp = dpmi_sel();
-	    *--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
-	    _esp -= 24;
-	} else {
-	    unsigned short *ssp = sp;
-	    *--ssp = *--rm_ssp;
-	    D_printf("data: 0x%x ", *ssp);
-	    *--ssp = *--rm_ssp;
-	    D_printf("0x%x ", *ssp);
-	    *--ssp = *--rm_ssp;
-	    D_printf("0x%x ", *ssp);
-	    *--ssp = *--rm_ssp;
-	    D_printf("0x%x\n", *ssp);
-	    *--ssp = dpmi_sel();
-	    *--ssp = DPMI_SEL_OFF(MSDOS_return_from_pm);
-	    _LWORD(esp) -= 12;
-	}
-    }
-    return 1;
+    return ret;
 }
+#endif
 
 #if 0
 void msdos_post_rm(struct sigcontext_struct *scp,
@@ -1637,25 +1701,30 @@ void msdos_post_rm(struct sigcontext_struct *scp,
 }
 #endif
 
-int msdos_pre_pm(struct sigcontext_struct *scp,
-		 struct RealModeCallStructure *rmreg)
+static void xms_call(struct RealModeCallStructure *rmreg)
 {
     int rmask = (1 << cs_INDEX) |
 	    (1 << eip_INDEX) | (1 << ss_INDEX) | (1 << esp_INDEX);
-    if (_eip == 1 + DPMI_SEL_OFF(MSDOS_XMS_call)) {
-	D_printf("MSDOS: XMS call to 0x%x:0x%x\n",
+    D_printf("MSDOS: XMS call to 0x%x:0x%x\n",
 		 MSDOS_CLIENT.XMS_call.segment,
 		 MSDOS_CLIENT.XMS_call.offset);
-	RMREG(cs) = DPMI_SEG;
-	RMREG(ip) = DPMI_OFF + HLT_OFF(MSDOS_return_from_rm);
-	do_call_to(MSDOS_CLIENT.XMS_call.segment,
+    do_call_to(MSDOS_CLIENT.XMS_call.segment,
 		     MSDOS_CLIENT.XMS_call.offset, rmreg, rmask);
+}
+
+#ifdef DOSEMU
+int msdos_pre_pm(struct sigcontext_struct *scp,
+		 struct RealModeCallStructure *rmreg)
+{
+    if (_eip == 1 + DPMI_SEL_OFF(MSDOS_XMS_call)) {
+	xms_call(rmreg);
     } else {
 	error("MSDOS: unknown pm call %#x\n", _eip);
 	return 0;
     }
     return 1;
 }
+#endif
 
 #if 0
 void msdos_post_pm(struct sigcontext_struct *scp,

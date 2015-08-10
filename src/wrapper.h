@@ -100,13 +100,6 @@ void *SEL_ADR(unsigned short sel, unsigned int reg);
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
 u_short DPMI_ldt_alias(void);
 
-extern void pm_to_rm_regs(struct sigcontext_struct *scp, unsigned int mask);
-extern void rm_to_pm_regs(struct sigcontext_struct *scp, unsigned int mask);
-
-extern unsigned short dpmi_sel(void);
-extern unsigned short dpmi_data_sel(void);
-void fake_call_to(int cs, int ip);
-
 #define pushw(base, ptr, val) \
 	do { \
 		ptr = (Bit16u)(ptr - 1); \
@@ -132,18 +125,10 @@ void fake_call_to(int cs, int ip);
 		(__res1 << 8) | __res0; \
 	})
 
-#define DPMI_SEG 0
-#define DPMI_OFF 0
-#define DPMI_ADD 0
-#define HLT_OFF(x) 0
 #define DOS_LONG_READ_SEG 0
 #define DOS_LONG_READ_OFF 0
 #define DOS_LONG_WRITE_SEG 0
 #define DOS_LONG_WRITE_OFF 0
-#define MSDOS_XMS_call 0
-#define DPMI_sel_code_start 0
-#define DPMI_SEL_OFF(x) (x-DPMI_sel_code_start)
-#define MSDOS_return_from_pm 0
 
 #define D_printf(...)
 #define g_printf(...)
@@ -182,6 +167,10 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 
 u_short dos_get_psp(void);
 void lrhlp_setup(far_t rmcb, int is_w);
-struct pmaddr_s register_api_call(void (*handler)(struct sigcontext *));
+struct pmaddr_s get_pm_handler(void (*handler)(struct sigcontext *));
+far_t get_rm_handler(int (*handler)(struct sigcontext *,
+	const struct RealModeCallStructure *));
+struct pmaddr_s get_pmrm_handler(void (*handler)(
+	struct RealModeCallStructure *));
 
 #endif /* DPMI_H */
