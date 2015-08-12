@@ -166,7 +166,8 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 }
 
 u_short dos_get_psp(void);
-void lrhlp_setup(far_t rmcb, int is_w);
+void lrhlp_setup(far_t rmcb);
+void lwhlp_setup(far_t rmcb);
 struct pmaddr_s get_pm_handler(void (*handler)(struct sigcontext *));
 far_t get_rm_handler(int (*handler)(struct sigcontext *,
 	const struct RealModeCallStructure *));

@@ -240,7 +240,11 @@ void restore_pm_regs(struct sigcontext_struct *scp)
 #endif
 }
 
-void lrhlp_setup(far_t rmcb, int is_w)
+void lrhlp_setup(far_t rmcb)
+{
+}
+
+void lwhlp_setup(far_t rmcb)
 {
 }
 
