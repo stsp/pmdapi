@@ -248,6 +248,10 @@ void lwhlp_setup(far_t rmcb)
 {
 }
 
+void exechlp_setup(void)
+{
+}
+
 u_short DPMI_ldt_alias(void)
 {
   return 0;
@@ -287,5 +291,23 @@ struct pmaddr_s get_pmrm_handler(void (*handler)(
 	struct RealModeCallStructure *))
 {
   struct pmaddr_s ret = {};
+  return ret;
+}
+
+far_t get_lr_helper(void)
+{
+  far_t ret = {};
+  return ret;
+}
+
+far_t get_lw_helper(void)
+{
+  far_t ret = {};
+  return ret;
+}
+
+far_t get_exec_helper(void)
+{
+  far_t ret = {};
   return ret;
 }

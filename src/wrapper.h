@@ -93,8 +93,6 @@ extern int DPMI_free_realmode_callback(u_short seg, u_short off);
 
 extern void copy_context(struct sigcontext_struct *d,
     struct sigcontext_struct *s, int copy_fpu);
-extern void save_pm_regs(struct sigcontext_struct *);
-extern void restore_pm_regs(struct sigcontext_struct *);
 
 void *SEL_ADR(unsigned short sel, unsigned int reg);
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
@@ -124,11 +122,6 @@ u_short DPMI_ldt_alias(void);
 		ptr = (Bit16u)(ptr + 1); \
 		(__res1 << 8) | __res0; \
 	})
-
-#define DOS_LONG_READ_SEG 0
-#define DOS_LONG_READ_OFF 0
-#define DOS_LONG_WRITE_SEG 0
-#define DOS_LONG_WRITE_OFF 0
 
 #define D_printf(...)
 #define g_printf(...)
@@ -168,11 +161,15 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 u_short dos_get_psp(void);
 void lrhlp_setup(far_t rmcb);
 void lwhlp_setup(far_t rmcb);
+void exechlp_setup(void);
 struct pmaddr_s get_pm_handler(void (*handler)(struct sigcontext *));
 far_t get_rm_handler(int (*handler)(struct sigcontext *,
 	const struct RealModeCallStructure *));
 struct pmaddr_s get_pmrm_handler(void (*handler)(
 	struct RealModeCallStructure *));
+far_t get_lr_helper(void);
+far_t get_lw_helper(void);
+far_t get_exec_helper(void);
 
 #define TF_MASK		0x00000100
 #define IF_MASK		0x00000200
