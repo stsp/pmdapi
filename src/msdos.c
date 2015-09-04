@@ -230,6 +230,8 @@ static void prepare_ems_frame(void)
     emm_save_handle_state(ems_handle);
     emm_map_unmap_multi(ems_map_simple, ems_handle, MSDOS_EMS_PAGES);
     ems_frame_mapped = 1;
+    if (debug_level('M') >= 5)
+	D_printf("MSDOS: EMS frame mapped\n");
 }
 
 static void restore_ems_frame(void)
@@ -240,6 +242,8 @@ static void restore_ems_frame(void)
     }
     emm_restore_handle_state(ems_handle);
     ems_frame_mapped = 0;
+    if (debug_level('M') >= 5)
+	D_printf("MSDOS: EMS frame unmapped\n");
 }
 
 static void get_ext_API(struct sigcontext *scp)
@@ -475,6 +479,12 @@ static void rm_do_int_to(int cs, int ip, struct RealModeCallStructure *rmreg,
   _RMREG(ip) = ip;
 }
 
+static void rm_int(int intno, struct RealModeCallStructure *rmreg,
+	int rmask)
+{
+  rm_do_int_to(ISEG(intno), IOFF(intno), rmreg, rmask);
+}
+
 static void do_call(int cs, int ip, struct RealModeCallStructure *rmreg,
 	int rmask)
 {
@@ -513,26 +523,27 @@ static void old_dos_terminate(struct sigcontext *scp, int i,
 			      struct RealModeCallStructure *rmreg, int rmask)
 {
     unsigned short psp_seg_sel, parent_psp = 0;
-    unsigned short psp_sig;
+    unsigned short psp_sig, psp;
 
     D_printf("MSDOS: old_dos_terminate, int=%#x\n", i);
 
+    psp = dos_get_psp();
 #if 0
-    _eip = READ_WORD(SEGOFF2LINEAR(dos_get_psp(), 0xa));
+    _eip = READ_WORD(SEGOFF2LINEAR(psp, 0xa));
     _cs =
 	ConvertSegmentToCodeDescriptor(READ_WORD
 				       (SEGOFF2LINEAR
-					(dos_get_psp(), 0xa + 2)));
+					(psp, 0xa + 2)));
 #endif
 
     /* put our return address there */
-    WRITE_WORD(SEGOFF2LINEAR(dos_get_psp(), 0xa), READ_RMREG(ip, rmask));
-    WRITE_WORD(SEGOFF2LINEAR(dos_get_psp(), 0xa + 2), READ_RMREG(cs, rmask));
+    WRITE_WORD(SEGOFF2LINEAR(psp, 0xa), READ_RMREG(ip, rmask));
+    WRITE_WORD(SEGOFF2LINEAR(psp, 0xa + 2), READ_RMREG(cs, rmask));
     /* cs should point to PSP, ip doesn't matter */
-    _RMREG(cs) = dos_get_psp();
+    _RMREG(cs) = psp;
     _RMREG(ip) = 0x100;
 
-    psp_seg_sel = READ_WORD(SEGOFF2LINEAR(dos_get_psp(), 0x16));
+    psp_seg_sel = READ_WORD(SEGOFF2LINEAR(psp, 0x16));
     /* try segment */
     psp_sig = READ_WORD(SEGOFF2LINEAR(psp_seg_sel, 0));
     if (psp_sig != 0x20CD) {
@@ -563,12 +574,12 @@ static void old_dos_terminate(struct sigcontext *scp, int i,
     if (!parent_psp) {
 	/* no PSP found, use current as the last resort */
 	D_printf("MSDOS: using current PSP as parent!\n");
-	parent_psp = dos_get_psp();
+	parent_psp = psp;
     }
 
     D_printf("MSDOS: parent PSP seg=%#x\n", parent_psp);
     if (parent_psp != psp_seg_sel)
-	WRITE_WORD(SEGOFF2LINEAR(dos_get_psp(), 0x16), parent_psp);
+	WRITE_WORD(SEGOFF2LINEAR(psp, 0x16), parent_psp);
 }
 
 /*
@@ -587,7 +598,7 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 			       struct RealModeCallStructure *rmreg,
 			       int *r_mask)
 {
-    int rm_mask = *r_mask, ret = 0;
+    int rm_mask = *r_mask, alt_ent = 0, act = 0;
 #define RMPRESERVE1(rg) (rm_mask |= (1 << rg##_INDEX))
 #define RMPRESERVE2(rg1, rg2) (rm_mask |= ((1 << rg1##_INDEX) | (1 << rg2##_INDEX)))
 #define SET_RMREG(rg, val) (RMPRESERVE1(rg), _RMREG(rg) = (val))
@@ -606,8 +617,10 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 	}
     }
 
-    if (need_xbuf(intr, _LWORD(eax)))
+    if (need_xbuf(intr, _LWORD(eax))) {
 	prepare_ems_frame();
+	act = 1;
+    }
 
     /* only consider DOS and some BIOS services */
     switch (intr) {
@@ -892,7 +905,7 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 		 * here and use the AX stack for post_extender(), which
 		 * is both unportable and ugly. */
 		rm_do_int_to(rma.segment, rma.offset, rmreg, rm_mask);
-		ret = MSDOS_ALT_ENT;
+		alt_ent = 1;
 	    }
 	    break;
 
@@ -958,7 +971,7 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 	    SET_RMREG(ecx, D_16_32(_ecx));
 	    lrhlp_setup(MSDOS_CLIENT.rmcb);
 	    rm_do_int_to(rma.segment, rma.offset, rmreg, rm_mask);
-	    ret = MSDOS_ALT_ENT;
+	    alt_ent = 1;
 	    break;
 	}
 	case 0x40: {		/* DOS Write */
@@ -970,7 +983,7 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 	    SET_RMREG(ecx, D_16_32(_ecx));
 	    lwhlp_setup(MSDOS_CLIENT.rmcb);
 	    rm_do_int_to(rma.segment, rma.offset, rmreg, rm_mask);
-	    ret = MSDOS_ALT_ENT;
+	    alt_ent = 1;
 	    break;
 	}
 	case 0x53:		/* Generate Drive Parameter Table  */
@@ -1201,6 +1214,11 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 	    break;
 	}
 	break;
+
+    default:
+	if (!act)
+	    return MSDOS_NONE;
+	break;
     }
 
     if (need_copy_dseg(intr, _LWORD(eax))) {
@@ -1229,8 +1247,10 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 	MEMCPY_DOS2DOS(dst, src, len);
     }
 
+    if (!alt_ent)
+	rm_int(intr, rmreg, rm_mask);
     *r_mask = rm_mask;
-    return ret;
+    return MSDOS_RM;
 }
 
 #define RMREG(x) _RMREG(x)

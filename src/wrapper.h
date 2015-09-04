@@ -127,6 +127,7 @@ u_short DPMI_ldt_alias(void);
 #define g_printf(...)
 #define error(...)
 #define dosemu_error(...)
+#define debug_level(...) 0
 #define snprintf(a,b,c,d) sprintf(a,c,d)
 #define ConvertSegmentToDescriptor_lim(a,b) ConvertSegmentToDescriptor(a)
 #define MEMCPY_2DOS(dos_addr, unix_addr, n) \
