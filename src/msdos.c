@@ -65,8 +65,22 @@ static unsigned short EMM_SEG;
 #define sp_INDEX esp_INDEX
 #define flags_INDEX eflags_INDEX
 
-static int msdos_client_num = 0;
+#define MSDOS_MAX_MEM_ALLOCS 1024
+struct msdos_struct {
+  int is_32;
+  struct pmaddr_s mouseCallBack, PS2mouseCallBack; /* user\'s mouse routine */
+  far_t XMS_call;
+  /* used when passing a DTA higher than 1MB */
+  unsigned short user_dta_sel;
+  unsigned long user_dta_off;
+  unsigned short user_psp_sel;
+  unsigned short lowmem_seg;
+  dpmi_pm_block mem_map[MSDOS_MAX_MEM_ALLOCS];
+  far_t rmcb;
+  int rmcb_alloced;
+};
 static struct msdos_struct msdos_client[DPMI_MAX_CLIENTS];
+static int msdos_client_num = 0;
 
 static int ems_frame_mapped;
 static int ems_handle;
@@ -84,14 +98,6 @@ static int mouse_callback(struct sigcontext *scp,
 static int ps2_mouse_callback(struct sigcontext *scp,
 		 const struct RealModeCallStructure *rmreg);
 static void xms_call(struct RealModeCallStructure *rmreg);
-
-static const struct msdos_ops msdops = {
-    .rmcb_handler = rmcb_handler,
-    .api_call = msdos_api_call,
-    .mouse_callback = mouse_callback,
-    .ps2_mouse_callback = ps2_mouse_callback,
-    .xms_call = xms_call,
-};
 
 static void set_io_buffer(char *ptr, unsigned int size)
 {
@@ -124,7 +130,6 @@ static unsigned short trans_buffer_seg(void)
 
 void msdos_setup(void)
 {
-    doshlp_init(&msdops);
 }
 
 void msdos_reset(u_short emm_s)
@@ -148,16 +153,19 @@ void msdos_init(int is_32, unsigned short mseg)
 		 envp, get_env_sel());
     }
     if (msdos_client_num == 1 ||
-	    msdos_client[msdos_client_num - 2].is_32 != is_32)
+	    msdos_client[msdos_client_num - 2].is_32 != is_32) {
 	MSDOS_CLIENT.rmcb = allocate_realmode_callback(rmcb_handler);
-    else
+	MSDOS_CLIENT.rmcb_alloced = 1;
+    } else {
 	MSDOS_CLIENT.rmcb = msdos_client[msdos_client_num - 2].rmcb;
+    }
     D_printf("MSDOS: init, %i\n", msdos_client_num);
 }
 
 void msdos_done(void)
 {
-    DPMI_free_realmode_callback(MSDOS_CLIENT.rmcb.segment,
+    if (MSDOS_CLIENT.rmcb_alloced)
+	free_realmode_callback(MSDOS_CLIENT.rmcb.segment,
 	    MSDOS_CLIENT.rmcb.offset);
     if (get_env_sel())
 	write_env_sel(GetSegmentBase(get_env_sel()) >> 4);
@@ -252,7 +260,7 @@ static void get_ext_API(struct sigcontext *scp)
     D_printf("MSDOS: GetVendorAPIEntryPoint: %s\n", ptr);
     if ((!strcmp("WINOS2", ptr)) || (!strcmp("MS-DOS", ptr))) {
 	_LO(ax) = 0;
-	pma = get_pm_handler(msdos_api_call);
+	pma = get_pm_handler(API_CALL, msdos_api_call);
 	_es = pma.selector;
 	_edi = pma.offset;
 	_eflags &= ~CF;
@@ -639,7 +647,7 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 			 _es, D_16_32(_ebx));
 		    MSDOS_CLIENT.PS2mouseCallBack.selector = _es;
 		    MSDOS_CLIENT.PS2mouseCallBack.offset = D_16_32(_ebx);
-		    rma = get_rm_handler(ps2_mouse_callback);
+		    rma = get_rm_handler(PS2MOUSE_CB, ps2_mouse_callback);
 		    SET_RMREG(es, rma.segment);
 		    SET_RMREG(ebx, rma.offset);
 		} else {
@@ -1202,7 +1210,7 @@ int msdos_pre_extender(struct sigcontext *scp, int intr,
 		if (_es) {
 		    far_t rma;
 		    D_printf("MSDOS: set mouse callback\n");
-		    rma = get_rm_handler(mouse_callback);
+		    rma = get_rm_handler(MOUSE_CB, mouse_callback);
 		    SET_RMREG(es, rma.segment);
 		    SET_RMREG(edx, rma.offset);
 		} else {
@@ -1344,7 +1352,7 @@ int msdos_post_extender(struct sigcontext *scp, int intr,
 	case 0x4310: {
 	    struct pmaddr_s pma;
 	    MSDOS_CLIENT.XMS_call = MK_FARt(RMREG(es), RMLWORD(ebx));
-	    pma = get_pmrm_handler(xms_call);
+	    pma = get_pmrm_handler(XMS_CALL, xms_call);
 	    SET_REG(es, pma.selector);
 	    SET_REG(ebx, pma.offset);
 	    break;
