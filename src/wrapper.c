@@ -4,6 +4,8 @@
 #include "sigcontext.h"
 #include "cpu.h"
 #include "entry.h"
+#include "dpmi.h"
+#include "msdoshlp.h"
 #include "wrapper.h"
 
 typedef struct segment_descriptor_s
@@ -123,10 +125,21 @@ void FreeSegRegs(struct sigcontext *scp, unsigned short selector)
     if ((_gs | 7) == (selector | 7)) _gs = 0;
 }
 
-void copy_context(struct sigcontext_struct *d,
-    struct sigcontext_struct *s, int copy_fpu)
+void copy_context(struct sigcontext *d, struct sigcontext *s,
+    int copy_fpu)
 {
+  struct _fpstate *fptr = d->fpstate;
   *d = *s;
+  switch (copy_fpu) {
+    case 1:   // copy FPU context
+      if (fptr == s->fpstate)
+        dosemu_error("Copy FPU context between the same locations?\n");
+      *fptr = *s->fpstate;
+      /* fallthrough */
+    case -1:  // don't copy
+      d->fpstate = fptr;
+      break;
+  }
 }
 
 void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc)
@@ -203,55 +216,6 @@ unsigned int GetSegmentBase(unsigned short selector)
   return Segments[selector >> 3].base_addr;
 }
 
-#define DPMI_max_rec_pm_func 16
-static struct sigcontext_struct DPMI_pm_stack[DPMI_max_rec_pm_func];
-static int DPMI_pm_procedure_running = 0;
-
-void save_pm_regs(struct sigcontext_struct *scp)
-{
-  if (DPMI_pm_procedure_running >= DPMI_max_rec_pm_func) {
-    error("DPMI: DPMI_pm_procedure_running = 0x%x\n",DPMI_pm_procedure_running);
-//    leavedos(25);
-    return;
-  }
-//  _eflags = eflags_VIF(_eflags);
-  copy_context(&DPMI_pm_stack[DPMI_pm_procedure_running++], scp, 0);
-}
-
-void restore_pm_regs(struct sigcontext_struct *scp)
-{
-  if (DPMI_pm_procedure_running > DPMI_max_rec_pm_func ||
-    DPMI_pm_procedure_running < 1) {
-    error("DPMI: DPMI_pm_procedure_running = 0x%x\n",DPMI_pm_procedure_running);
-//    leavedos(25);
-    return;
-  }
-  copy_context(scp, &DPMI_pm_stack[--DPMI_pm_procedure_running], -1);
-#if 0
-  if (_eflags & VIF) {
-    if (!isset_IF())
-      D_printf("DPMI: set IF on restore_pm_regs\n");
-    set_IF();
-  } else {
-    if (isset_IF())
-      D_printf("DPMI: clear IF on restore_pm_regs\n");
-    clear_IF();
-  }
-#endif
-}
-
-void lrhlp_setup(far_t rmcb)
-{
-}
-
-void lwhlp_setup(far_t rmcb)
-{
-}
-
-void exechlp_setup(void)
-{
-}
-
 u_short DPMI_ldt_alias(void)
 {
   return 0;
@@ -294,13 +258,13 @@ struct pmaddr_s get_pmrm_handler(void (*handler)(
   return ret;
 }
 
-far_t get_lr_helper(void)
+far_t get_lr_helper(far_t rmcb)
 {
   far_t ret = {};
   return ret;
 }
 
-far_t get_lw_helper(void)
+far_t get_lw_helper(far_t rmcb)
 {
   far_t ret = {};
   return ret;
@@ -310,4 +274,11 @@ far_t get_exec_helper(void)
 {
   far_t ret = {};
   return ret;
+}
+
+static const struct msdos_ops *msdos;
+
+void doshlp_init(const struct msdos_ops *ops)
+{
+    msdos = ops;
 }

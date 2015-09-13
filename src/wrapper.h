@@ -1,12 +1,5 @@
-/*
- * (C) Copyright 1992, ..., 2004 the "DOSEMU-Development-Team".
- *
- * for details see file COPYING in the DOSEMU distribution
- */
-
-/* this is for the DPMI support */
-#ifndef DPMI_H
-#define DPMI_H
+#ifndef WRAPPER_H
+#define WRAPPER_H
 
 #include <dpmi.h>
 #include <stdint.h>
@@ -16,8 +9,6 @@
 
 typedef unsigned short us;
 typedef uint32_t dosaddr_t;
-
-#define sigcontext_struct sigcontext
 
 #define DPMI_MAX_CLIENTS	32	/* maximal number of clients */
 #define PAGE_MASK	(~(PAGE_SIZE-1))
@@ -91,8 +82,8 @@ extern far_t allocate_realmode_callback(void (*handler)(
 	struct RealModeCallStructure *));
 extern int DPMI_free_realmode_callback(u_short seg, u_short off);
 
-extern void copy_context(struct sigcontext_struct *d,
-    struct sigcontext_struct *s, int copy_fpu);
+extern void copy_context(struct sigcontext *d,
+    struct sigcontext *s, int copy_fpu);
 
 void *SEL_ADR(unsigned short sel, unsigned int reg);
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
@@ -160,17 +151,6 @@ static inline dosaddr_t DOSADDR_REL(const unsigned char *a)
 }
 
 u_short dos_get_psp(void);
-void lrhlp_setup(far_t rmcb);
-void lwhlp_setup(far_t rmcb);
-void exechlp_setup(void);
-struct pmaddr_s get_pm_handler(void (*handler)(struct sigcontext *));
-far_t get_rm_handler(int (*handler)(struct sigcontext *,
-	const struct RealModeCallStructure *));
-struct pmaddr_s get_pmrm_handler(void (*handler)(
-	struct RealModeCallStructure *));
-far_t get_lr_helper(void);
-far_t get_lw_helper(void);
-far_t get_exec_helper(void);
 
 #define TF_MASK		0x00000100
 #define IF_MASK		0x00000200
@@ -182,4 +162,4 @@ far_t get_exec_helper(void);
 #define VIP_MASK	0x00100000	/* virtual interrupt pending */
 #define ID_MASK		0x00200000
 
-#endif /* DPMI_H */
+#endif
