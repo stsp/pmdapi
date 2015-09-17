@@ -8,6 +8,7 @@
 #include "cpu.h"
 
 typedef unsigned short us;
+typedef unsigned char u_char;
 typedef uint32_t dosaddr_t;
 
 #define DPMI_MAX_CLIENTS	32	/* maximal number of clients */

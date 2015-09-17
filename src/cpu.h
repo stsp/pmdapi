@@ -82,6 +82,11 @@ union dword {
 #define VIP VIP_MASK
 #define ID  ID_MASK
 
+#define get_FLAGS(flags) ({ \
+  int __flgs = flags; \
+  (((__flgs & VIF) ? __flgs | IF : __flgs & ~IF)); \
+})
+
 #define MK_FARt(seg, off) ((far_t){(off), (seg)})
 #define SEG2LINEAR(seg)	((void *)  ( ((unsigned int)(seg)) << 4)  )
 #define SEGOFF2LINEAR(seg, off)  ((((Bit32u)(seg)) << 4) + (off))
