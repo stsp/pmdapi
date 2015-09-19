@@ -1,5 +1,6 @@
 #include <dpmi.h>
 #include "sigcontext.h"
+#include "entry.h"
 #include "calls.h"
 
 #define LOAD_REG(b, src, dreg) \
@@ -99,4 +100,17 @@ void do_pm_int_call16(struct sigcontext *scp, __dpmi_raddr *addr)
   SAVE_CONTEXT(dos_context);
   LOAD_CONTEXT(saved_context);
   *scp = dos_context;
+}
+
+void do_rm_int(int inum, __dpmi_regs *regs)
+{
+  asm (
+    "movw $0x300, %%ax\n"
+    "movw $0, %%cx\n"
+    "pushw %%es\n"
+    "movw %1, %%es\n"
+    "int $0x31\n"
+    "popw %%es\n"
+  :: "b"(inum), "r"(dseg32), "D"(regs)
+  : "ax", "cx");
 }

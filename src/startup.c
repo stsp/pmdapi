@@ -4,6 +4,7 @@
 #include "desc.h"
 #include "ldt.h"
 #include "entry.h"
+#include "emmwrp.h"
 #include "startup.h"
 
 int have_fs = 0, have_gs = 0;
@@ -16,6 +17,8 @@ int main()
   short cs16, cs32, ds16, ds32;
   unsigned long cs_base, ds_base;
   modify_ldt_t ldt;
+
+  emm_init();
 
   cs32 = _my_cs();
   ds32 = _my_ds();
