@@ -11,28 +11,18 @@
 #include "msdoshlp.h"
 #include "wrapper.h"
 
-typedef struct segment_descriptor_s
-{
-    unsigned int	base_addr;	/* Pointer to segment in flat memory */
-    unsigned int	limit;		/* Limit of Segment */
-    unsigned int	type:2;
-    unsigned int	is_32:1;	/* one for is 32-bit Segment */
-    unsigned int	readonly:1;	/* one for read only Segments */
-    unsigned int	is_big:1;	/* Granularity */
-    unsigned int	not_present:1;
-    unsigned int	useable:1;
-    unsigned int	used;		/* Segment in use by client # */
-					/* or Linux/GLibc (0xfe) */
-					/* or DOSEMU (0xff) */
-} SEGDESC;
-#define LDT_ENTRIES     8192
-#define MAX_SELECTORS   LDT_ENTRIES
-static SEGDESC Segments[MAX_SELECTORS];
-
 unsigned char *mem_base;
 
 int ValidAndUsedSelector(unsigned short selector)
 {
+  int lar;
+  if (!(selector & 4))
+    return 0;
+  lar = __dpmi_get_descriptor_access_rights(selector);
+  if (!lar)
+    return 0;
+  if ((lar & 0x90) != 0x90)
+    return 0;
   return 1;
 }
 
@@ -173,7 +163,7 @@ void *SEL_ADR(unsigned short sel, unsigned int reg)
     return (void *)(uintptr_t)reg;
   }
   /* LDT */
-  return SEL_ADR_LDT(sel, reg, Segments[sel>>3].is_32);
+  return SEL_ADR_LDT(sel, reg, is_32);
 }
 
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32)
