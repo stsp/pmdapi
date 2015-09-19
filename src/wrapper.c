@@ -239,14 +239,32 @@ far_t allocate_realmode_callback(void (*handler)(
   return ret;
 }
 
-int DPMI_free_realmode_callback(u_short seg, u_short off)
+int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
+	const struct RealModeCallStructure *),
+	void (*ret_handler[])(const struct sigcontext *,
+	struct RealModeCallStructure *),
+	int num, far_t *r_cbks)
 {
-  return 0;
+#if 0
+    int i;
+    assert(num <= 3);
+    msdos.rmcb_handler = handler;
+    msdos.rmcb_ret_handler = ret_handler;
+    for (i = 0; i < num; i++)
+	r_cbks[i] = DPMI_allocate_realmode_callback(dpmi_sel(),
+	    get_cb(i), dpmi_data_sel(), DPMI_DATA_OFF(MSDOS_rmcb_data));
+#endif
+    return num;
 }
 
-int free_realmode_callback(u_short seg, u_short off)
+void free_realmode_callbacks(far_t *cbks, int num)
 {
-    return DPMI_free_realmode_callback(seg, off);
+    int i;
+    for (i = 0; i < num; i++) {
+	__dpmi_raddr addr = {
+		.segment = cbks[i].segment, .offset16 = cbks[i].offset };
+	__dpmi_free_real_mode_callback(&addr);
+    }
 }
 
 struct pmaddr_s get_pm_handler(enum MsdOpIds id,
@@ -288,37 +306,6 @@ struct pmaddr_s get_pmrm_handler(enum MsdOpIds id, void (*handler)(
     default:
 	dosemu_error("unknown pmrm handler\n");
 	ret = (struct pmaddr_s){ 0, 0 };
-	break;
-    }
-    return ret;
-}
-
-far_t get_rm_handler(enum MsdOpIds id, int (*handler)(struct sigcontext *,
-	const struct RealModeCallStructure *))
-{
-    far_t ret;
-    switch (id) {
-    case MOUSE_CB:
-	msdos.mouse_callback = handler;
-#if 0
-	ret.segment = DPMI_SEG;
-	ret.offset = DPMI_OFF + HLT_OFF(MSDOS_mouse_callback);
-#else
-	ret = (far_t){ 0, 0 };
-#endif
-	break;
-    case PS2MOUSE_CB:
-	msdos.ps2_mouse_callback = handler;
-#if 0
-	ret.segment = DPMI_SEG;
-	ret.offset = DPMI_OFF + HLT_OFF(MSDOS_PS2_mouse_callback);
-#else
-	ret = (far_t){ 0, 0 };
-#endif
-	break;
-    default:
-	dosemu_error("unknown rm handler\n");
-	ret = (far_t){ 0, 0 };
 	break;
     }
     return ret;
