@@ -20,5 +20,7 @@ extern unsigned long ds32_desc[2];
 extern unsigned long is_32;
 extern void data16_end(void);
 
+extern void api_call_ent(void);
+
 #endif
 #endif

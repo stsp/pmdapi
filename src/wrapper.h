@@ -7,6 +7,7 @@
 #include "sigcontext.h"
 #include "cpu.h"
 
+typedef unsigned int u_int;
 typedef unsigned short us;
 typedef unsigned char u_char;
 typedef uint32_t dosaddr_t;
@@ -59,7 +60,6 @@ int GetDescriptor(us selector, unsigned long *lp);
 
 extern int SetSegmentBaseAddress(unsigned short selector,
 					unsigned long baseaddr);
-unsigned long GetSegmentBaseAddress(unsigned short);
 unsigned long GetSegmentLimit(unsigned short);
 extern unsigned int GetSegmentBase(unsigned short);
 int dpmi_mhp_get_selector_size(int sel);
@@ -150,5 +150,7 @@ u_short dos_get_psp(void);
 #define VIF_MASK	0x00080000	/* virtual interrupt flag */
 #define VIP_MASK	0x00100000	/* virtual interrupt pending */
 #define ID_MASK		0x00200000
+
+void do_api_call(struct sigcontext *scp);
 
 #endif

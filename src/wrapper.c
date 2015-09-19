@@ -1,9 +1,12 @@
 #include <dpmi.h>
+#include <sys/segments.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <assert.h>
 #include "sigcontext.h"
 #include "cpu.h"
 #include "entry.h"
+#include "calls.h"
 #include "dpmi.h"
 #include "msdoshlp.h"
 #include "wrapper.h"
@@ -82,18 +85,9 @@ dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size)
   return block;
 }
 
-unsigned long GetSegmentBaseAddress(unsigned short selector)
-{
-  unsigned long addr;
-  __dpmi_get_segment_base_address(selector, &addr);
-  return addr;
-}
-
 unsigned long GetSegmentLimit(unsigned short selector)
 {
-  unsigned long lim;
-  __dpmi_get_segment_base_address(selector, &lim);
-  return lim;
+  return __dpmi_get_segment_limit(selector);
 }
 
 int dpmi_mhp_get_selector_size(int selector)
@@ -161,14 +155,6 @@ unsigned long GetFreeMemory(void)
   return info.largest_available_free_block_in_bytes;
 }
 
-void prepare_ems_frame(void)
-{
-}
-
-void restore_ems_frame(void)
-{
-}
-
 static void *SEL_ADR_LDT(unsigned short sel, unsigned int reg, int is_32)
 {
   unsigned long p;
@@ -202,18 +188,19 @@ void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32)
 
 void GetFreeMemoryInformation(unsigned int *lp)
 {
+  __dpmi_get_free_memory_information((__dpmi_free_mem_info *)lp);
 }
 
 int GetDescriptor(us selector, unsigned long *lp)
 {
-    return 0;
+    return __dpmi_get_descriptor(selector, lp);
 }
 
 unsigned int GetSegmentBase(unsigned short selector)
 {
-  if (!ValidAndUsedSelector(selector))
-    return 0;
-  return Segments[selector >> 3].base_addr;
+  unsigned long addr;
+  __dpmi_get_segment_base_address(selector, &addr);
+  return addr;
 }
 
 u_short DPMI_ldt_alias(void)
@@ -224,20 +211,14 @@ u_short DPMI_ldt_alias(void)
 struct msdos_ops {
     void (*api_call)(struct sigcontext *scp);
     void (*xms_call)(struct RealModeCallStructure *rmreg);
-    int (*mouse_callback)(struct sigcontext *scp,
+    void (**rmcb_handler)(struct sigcontext *scp,
 	const struct RealModeCallStructure *rmreg);
-    int (*ps2_mouse_callback)(struct sigcontext *scp,
-	const struct RealModeCallStructure *rmreg);
-    void (*rmcb_handler)(struct RealModeCallStructure *rmreg);
+    void (**rmcb_ret_handler)(const struct sigcontext *scp,
+	struct RealModeCallStructure *rmreg);
+    u_short cb_es;
+    u_int cb_edi;
 };
 static struct msdos_ops msdos;
-
-far_t allocate_realmode_callback(void (*handler)(
-	struct RealModeCallStructure *))
-{
-  far_t ret = {};
-  return ret;
-}
 
 int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
 	const struct RealModeCallStructure *),
@@ -245,11 +226,11 @@ int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
 	struct RealModeCallStructure *),
 	int num, far_t *r_cbks)
 {
-#if 0
-    int i;
+//    int i;
     assert(num <= 3);
     msdos.rmcb_handler = handler;
     msdos.rmcb_ret_handler = ret_handler;
+#if 0
     for (i = 0; i < num; i++)
 	r_cbks[i] = DPMI_allocate_realmode_callback(dpmi_sel(),
 	    get_cb(i), dpmi_data_sel(), DPMI_DATA_OFF(MSDOS_rmcb_data));
@@ -267,6 +248,11 @@ void free_realmode_callbacks(far_t *cbks, int num)
     }
 }
 
+void do_api_call(struct sigcontext *scp)
+{
+    msdos.api_call(scp);
+}
+
 struct pmaddr_s get_pm_handler(enum MsdOpIds id,
 	void (*handler)(struct sigcontext *))
 {
@@ -274,11 +260,9 @@ struct pmaddr_s get_pm_handler(enum MsdOpIds id,
     switch (id) {
     case API_CALL:
 	msdos.api_call = handler;
+	ret.selector = _my_cs();
 #if 0
-	ret.selector = dpmi_sel();
-	ret.offset = DPMI_SEL_OFF(MSDOS_API_call);
-#else
-	ret = (struct pmaddr_s){ 0, 0 };
+	ret.offset = (u_int)api_call_ent;
 #endif
 	break;
     default:
@@ -296,11 +280,9 @@ struct pmaddr_s get_pmrm_handler(enum MsdOpIds id, void (*handler)(
     switch (id) {
     case XMS_CALL:
 	msdos.xms_call = handler;
+	ret.selector = _my_cs();
 #if 0
-	ret.selector = dpmi_sel();
 	ret.offset = DPMI_SEL_OFF(MSDOS_XMS_call);
-#else
-	ret = (struct pmaddr_s){ 0, 0 };
 #endif
 	break;
     default:
@@ -331,5 +313,8 @@ far_t get_exec_helper(void)
 
 u_short dos_get_psp(void)
 {
-  return 0;
+  __dpmi_regs regs = {0};
+  regs.h.ah = 0x51;
+  do_rm_int(0x21, &regs);
+  return regs.x.bx;
 }
