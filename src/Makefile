@@ -1,6 +1,6 @@
 CC = i586-pc-msdosdjgpp-gcc
 LD = i586-pc-msdosdjgpp-gcc
-CFLAGS = -Wall
+CFLAGS = -Wall -fms-extensions
 LDFLAGS = -Wall
 CFILES = msdos.c segreg.c wrapper.c emm.c startup.c handlers.c calls.c
 SFILES = entry.S

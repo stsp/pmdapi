@@ -36,24 +36,12 @@ typedef struct dpmi_pm_block_stuct {
 } dpmi_pm_block;
 
 struct RealModeCallStructure {
-  unsigned int edi;
-  unsigned int esi;
-  unsigned int ebp;
-  unsigned int esp_reserved;
-  unsigned int ebx;
-  unsigned int edx;
-  unsigned int ecx;
-  unsigned int eax;
-  unsigned short flags;
-  unsigned short es;
-  unsigned short ds;
-  unsigned short fs;
-  unsigned short gs;
-  unsigned short ip;
-  unsigned short cs;
-  unsigned short sp;
-  unsigned short ss;
-} __attribute__((packed));
+  __dpmi_regs;
+};
+
+#define RMREG(r) (rmreg->x.r)
+#define RMLWORD(r) (rmreg->x.r)
+#define E_RMREG(r) (rmreg->d.r)
 
 int ValidAndUsedSelector(unsigned short selector);
 
