@@ -13,6 +13,7 @@ typedef unsigned char u_char;
 typedef uint32_t dosaddr_t;
 
 #define DPMI_MAX_CLIENTS	32	/* maximal number of clients */
+#define PAGE_SIZE 4096
 #define PAGE_MASK	(~(PAGE_SIZE-1))
 /* to align the pointer to the (next) page boundary */
 #define PAGE_ALIGN(addr)	(((addr)+PAGE_SIZE-1)&PAGE_MASK)
@@ -152,5 +153,7 @@ u_short dos_get_psp(void);
 #define ID_MASK		0x00200000
 
 void do_api_call(struct sigcontext *scp);
+
+void wrapper_init(void);
 
 #endif

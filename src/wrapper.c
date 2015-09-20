@@ -2,6 +2,7 @@
 #include <sys/segments.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <assert.h>
 #include "sigcontext.h"
 #include "cpu.h"
@@ -12,6 +13,25 @@
 #include "wrapper.h"
 
 unsigned char *mem_base;
+static __dpmi_meminfo ldt_alias;
+static unsigned short dpmi_ldt_alias;
+
+#define LDT_ENTRIES     8192
+#define LDT_ENTRY_SIZE  8
+
+void wrapper_init(void)
+{
+  int err;
+  ldt_alias.size = PAGE_ALIGN(LDT_ENTRIES * LDT_ENTRY_SIZE);
+  err = __dpmi_allocate_linear_memory(&ldt_alias, 0);
+  if (err) {
+    printf("Warning: linear mem alloc failed\n");
+    return;
+  }
+  dpmi_ldt_alias = __dpmi_allocate_ldt_descriptors(1);
+  __dpmi_set_segment_base_address(dpmi_ldt_alias, ldt_alias.address);
+  __dpmi_set_segment_limit(dpmi_ldt_alias, ldt_alias.size - 1);
+}
 
 int ValidAndUsedSelector(unsigned short selector)
 {
@@ -195,7 +215,7 @@ unsigned int GetSegmentBase(unsigned short selector)
 
 u_short DPMI_ldt_alias(void)
 {
-  return 0;
+  return dpmi_ldt_alias;
 }
 
 struct msdos_ops {
