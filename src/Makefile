@@ -42,6 +42,6 @@ asm-offsets.h: asm-offsets.s
 
 entry.o: asm-offsets.h
 
-$(OFILES): $(CFILES) $(wildcard *.h)
+$(OFILES): $(wildcard *.h)
 $(PROGRAM): $(OFILES)
 	$(LD) $(LDFLAGS) -o $@ $(OFILES)
