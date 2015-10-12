@@ -1,0 +1,4 @@
+*.o
+*.exe
+asm-offsets.h
+asm-offsets.s
