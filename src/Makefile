@@ -1,10 +1,10 @@
 CC = i586-pc-msdosdjgpp-gcc
 LD = i586-pc-msdosdjgpp-gcc
 CFLAGS = -Wall -fms-extensions
-LDFLAGS = -Wall
-CFILES = msdos.c segreg.c wrapper.c emm.c startup.c handlers.c calls.c
+CPPFLAGS = -I.
+CFILES = wrapper.c emm.c instremu.c startup.c handlers.c calls.c
 SFILES = entry.S
-OFILES = $(CFILES:.c=.o) $(SFILES:.S=.o)
+OFILES = $(CFILES:.c=.o) $(SFILES:.S=.o) $(wildcard msdos/*.o)
 GFILES = asm-offsets.h asm-offsets.s
 PROGRAM = pmdapi.exe
 

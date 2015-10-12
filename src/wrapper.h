@@ -6,6 +6,7 @@
 #include <stddef.h>
 #include "sigcontext.h"
 #include "cpu.h"
+#include "ldt.h"
 
 typedef unsigned int u_int;
 typedef unsigned short us;
@@ -17,6 +18,7 @@ typedef uint32_t dosaddr_t;
 #define PAGE_MASK	(~(PAGE_SIZE-1))
 /* to align the pointer to the (next) page boundary */
 #define PAGE_ALIGN(addr)	(((addr)+PAGE_SIZE-1)&PAGE_MASK)
+#define DPMI_page_size		4096	/* 4096 bytes per page */
 
 enum { es_INDEX, cs_INDEX, ss_INDEX, ds_INDEX, fs_INDEX, gs_INDEX,
   eax_INDEX, ebx_INDEX, ecx_INDEX, edx_INDEX, esi_INDEX, edi_INDEX,
@@ -57,8 +59,10 @@ dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size);
 extern DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num);
 extern void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc);
 void GetFreeMemoryInformation(unsigned int *lp);
-int GetDescriptor(us selector, unsigned long *lp);
-
+int GetDescriptor(us selector, unsigned int *lp);
+extern unsigned short AllocateDescriptorsAt(unsigned short selector,
+    int number_of_descriptors);
+extern int SetDescriptor(unsigned short selector, unsigned int *lp);
 extern int SetSegmentBaseAddress(unsigned short selector,
 					unsigned long baseaddr);
 unsigned long GetSegmentLimit(unsigned short);

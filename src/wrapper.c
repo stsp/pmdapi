@@ -201,7 +201,7 @@ void GetFreeMemoryInformation(unsigned int *lp)
   __dpmi_get_free_memory_information((__dpmi_free_mem_info *)lp);
 }
 
-int GetDescriptor(us selector, unsigned long *lp)
+int GetDescriptor(us selector, unsigned int *lp)
 {
     return __dpmi_get_descriptor(selector, lp);
 }
@@ -213,9 +213,17 @@ unsigned int GetSegmentBase(unsigned short selector)
   return addr;
 }
 
-u_short DPMI_ldt_alias(void)
+unsigned short AllocateDescriptorsAt(unsigned short selector,
+    int number_of_descriptors)
 {
-  return dpmi_ldt_alias;
+    /* FIXME */
+    return 0;
+}
+
+int SetDescriptor(unsigned short selector, unsigned int *lp)
+{
+    /* FIXME */
+    return 0;
 }
 
 struct msdos_ops {

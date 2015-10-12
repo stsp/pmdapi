@@ -122,4 +122,6 @@ typedef struct {
   u_short segment;
 } far_t;
 
+#include "wrapper.h"
+
 #endif
