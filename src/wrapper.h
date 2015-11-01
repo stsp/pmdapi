@@ -67,6 +67,8 @@ extern int SetSegmentBaseAddress(unsigned short selector,
 					unsigned long baseaddr);
 unsigned long GetSegmentLimit(unsigned short);
 extern unsigned int GetSegmentBase(unsigned short);
+extern unsigned short CreateAliasDescriptor(unsigned short selector);
+extern int SetDescriptorAccessRights(unsigned short selector, unsigned short type_byte);
 int dpmi_mhp_get_selector_size(int sel);
 extern int SetSegmentLimit(unsigned short, unsigned int);
 extern unsigned short AllocateDescriptors(int);
@@ -81,7 +83,6 @@ extern void copy_context(struct sigcontext *d,
 
 void *SEL_ADR(unsigned short sel, unsigned int reg);
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
-u_short DPMI_ldt_alias(void);
 
 #define pushw(base, ptr, val) \
 	do { \
@@ -114,7 +115,6 @@ u_short DPMI_ldt_alias(void);
 #define dosemu_error(...)
 #define debug_level(...) 0
 #define snprintf(a,b,c,d) sprintf(a,c,d)
-#define ConvertSegmentToDescriptor_lim(a,b) ConvertSegmentToDescriptor(a)
 #define MEMCPY_2DOS(dos_addr, unix_addr, n) \
 	memcpy(LINEAR2UNIX(dos_addr), (unix_addr), (n))
 #define MEMSET_DOS(dos_addr, val, n) \

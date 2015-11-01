@@ -36,6 +36,7 @@
 #include "emm.h"
 #include "msdoshlp.h"
 #include "msdos_ldt.h"
+#include "msdos_priv.h"
 #include "msdos.h"
 
 #ifdef SUPPORT_DOSEMU_HELPERS
@@ -71,6 +72,12 @@ static unsigned short EMM_SEG;
 
 enum { RMCB_IO, RMCB_MS, RMCB_PS2MS, MAX_RMCBS };
 #define MSDOS_MAX_MEM_ALLOCS 1024
+#define MAX_CNVS 16
+struct seg_sel {
+    unsigned short seg;
+    unsigned short sel;
+    unsigned int lim;
+};
 struct msdos_struct {
   int is_32;
   struct pmaddr_s mouseCallBack, PS2mouseCallBack; /* user\'s mouse routine */
@@ -83,6 +90,9 @@ struct msdos_struct {
   dpmi_pm_block mem_map[MSDOS_MAX_MEM_ALLOCS];
   far_t rmcbs[MAX_RMCBS];
   int rmcb_alloced;
+  u_short ldt_alias;
+  u_short ldt_alias_winos2;
+  struct seg_sel seg_sel_map[MAX_CNVS];
 };
 static struct msdos_struct msdos_client[DPMI_MAX_CLIENTS];
 static int msdos_client_num = 0;
@@ -101,6 +111,7 @@ static void rmcb_handler(struct sigcontext *scp,
 static void rmcb_ret_handler(const struct sigcontext *scp,
 		 struct RealModeCallStructure *rmreg);
 static void msdos_api_call(struct sigcontext *scp);
+static void msdos_api_winos2_call(struct sigcontext *scp);
 static void mouse_callback(struct sigcontext *scp,
 		 const struct RealModeCallStructure *rmreg);
 static void ps2_mouse_callback(struct sigcontext *scp,
@@ -183,7 +194,12 @@ void msdos_init(int is_32, unsigned short mseg)
 	memcpy(MSDOS_CLIENT.rmcbs, msdos_client[msdos_client_num - 2].rmcbs,
 		sizeof(MSDOS_CLIENT.rmcbs));
     }
-    msdos_ldt_init(msdos_client_num);
+    MSDOS_CLIENT.ldt_alias = msdos_ldt_init(msdos_client_num);
+    MSDOS_CLIENT.ldt_alias_winos2 = CreateAliasDescriptor(
+	    MSDOS_CLIENT.ldt_alias);
+    SetDescriptorAccessRights(MSDOS_CLIENT.ldt_alias_winos2, 0xf0);
+    SetSegmentLimit(MSDOS_CLIENT.ldt_alias_winos2,
+	    LDT_ENTRIES * LDT_ENTRY_SIZE - 1);
     D_printf("MSDOS: init, %i\n", msdos_client_num);
 }
 
@@ -200,6 +216,40 @@ void msdos_done(void)
 int msdos_get_lowmem_size(void)
 {
     return DTA_Para_SIZE + EXEC_Para_SIZE;
+}
+
+unsigned short ConvertSegmentToDescriptor_lim(unsigned short segment,
+    unsigned int limit)
+{
+    unsigned short sel;
+    int i;
+    struct seg_sel *m = NULL;
+
+    D_printf("MSDOS: convert seg %#x to desc, lim=%#x\n", segment, limit);
+    for (i = 0; i < MAX_CNVS; i++) {
+	m = &MSDOS_CLIENT.seg_sel_map[i];
+	if (!m->sel)
+	    break;
+	if (m->seg == segment && m->lim == limit) {
+	    D_printf("MSDOS: found descriptor %#x\n", m->sel);
+	    return m->sel;
+	}
+    }
+    if (i == MAX_CNVS) {
+	error("segsel map overflow\n");
+	return 0;
+    }
+    D_printf("MSDOS: SEL for segment %#x not found, allocate at %i\n",
+	    segment, i);
+    sel = AllocateDescriptors(1);
+    if (!sel)
+	return 0;
+    SetSegmentBaseAddress(sel, segment << 4);
+    SetSegmentLimit(sel, limit);
+    m->seg = segment;
+    m->lim = limit;
+    m->sel = sel;
+    return sel;
 }
 
 static unsigned int msdos_malloc(unsigned long size)
@@ -282,9 +332,15 @@ static void get_ext_API(struct sigcontext *scp)
     struct pmaddr_s pma;
     char *ptr = SEL_ADR_CLNT(_ds, _esi, MSDOS_CLIENT.is_32);
     D_printf("MSDOS: GetVendorAPIEntryPoint: %s\n", ptr);
-    if ((!strcmp("WINOS2", ptr)) || (!strcmp("MS-DOS", ptr))) {
+    if (!strcmp("MS-DOS", ptr)) {
 	_LO(ax) = 0;
 	pma = get_pm_handler(API_CALL, msdos_api_call);
+	_es = pma.selector;
+	_edi = pma.offset;
+	_eflags &= ~CF;
+    } else if (!strcmp("WINOS2", ptr)) {
+	_LO(ax) = 0;
+	pma = get_pm_handler(API_WINOS2_CALL, msdos_api_winos2_call);
 	_es = pma.selector;
 	_edi = pma.offset;
 	_eflags &= ~CF;
@@ -1846,7 +1902,23 @@ static void msdos_api_call(struct sigcontext *scp)
 {
     D_printf("MSDOS: extension API call: 0x%04x\n", _LWORD(eax));
     if (_LWORD(eax) == 0x0100) {
-	u_short sel = DPMI_ldt_alias();	/* simulate direct ldt access */
+	u_short sel = MSDOS_CLIENT.ldt_alias;
+	if (sel) {
+	    _eax = sel;
+	    _eflags &= ~CF;
+	} else {
+	    _eflags |= CF;
+	}
+    } else {
+	_eflags |= CF;
+    }
+}
+
+static void msdos_api_winos2_call(struct sigcontext *scp)
+{
+    D_printf("MSDOS: WINOS2 extension API call: 0x%04x\n", _LWORD(eax));
+    if (_LWORD(eax) == 0x0100) {
+	u_short sel = MSDOS_CLIENT.ldt_alias_winos2;
 	if (sel) {
 	    _eax = sel;
 	    _eflags &= ~CF;

@@ -226,6 +226,18 @@ int SetDescriptor(unsigned short selector, unsigned int *lp)
     return 0;
 }
 
+int SetDescriptorAccessRights(unsigned short selector, unsigned short type_byte)
+{
+    /* FIXME */
+    return 0;
+}
+
+unsigned short CreateAliasDescriptor(unsigned short selector)
+{
+    /* FIXME */
+    return 0;
+}
+
 struct msdos_ops {
     void (*api_call)(struct sigcontext *scp);
     void (*xms_call)(struct RealModeCallStructure *rmreg);
