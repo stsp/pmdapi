@@ -59,6 +59,12 @@ int x86_handle_prefixes(struct sigcontext *scp, unsigned cs_base,
   int prefix = 0;
 
   x86->rep = 0;
+  x86->cs = 0;
+  x86->ds = 0;
+  x86->es = 0;
+  x86->fs = 0;
+  x86->gs = 0;
+  x86->ss = 0;
   x86->address_size = x86->operand_size = (x86->_32bit + 1) * 2;
   for (;; eip++) {
     switch(*(unsigned char *)MEM_BASE32(cs_base + eip)) {
@@ -119,7 +125,7 @@ int x86_handle_prefixes(struct sigcontext *scp, unsigned cs_base,
 static int decode_segreg(struct sigcontext *scp)
 {
   unsigned cs, eip;
-  unsigned char *csp;
+  unsigned char *csp, *orig_csp;
   int ret = -1;
   x86_ins x86;
 
@@ -127,11 +133,12 @@ static int decode_segreg(struct sigcontext *scp)
   cs = GetSegmentBase(_cs);
   eip = _eip + x86_handle_prefixes(scp, cs, &x86);
   csp = (unsigned char *)MEM_BASE32(cs + eip);
+  orig_csp = (unsigned char *)MEM_BASE32(cs + _eip);
 
   switch(*csp) {
     case 0x8e:		/* mov segreg,r/m16 */
       ret = sreg_idx(*(unsigned char *)MEM_BASE32(cs + eip + 1) >> 3);
-      _eip += instr_len(csp, x86._32bit);
+      _eip += instr_len(orig_csp, x86._32bit);
       break;
 
     case 0xca: /*retf imm 16*/
@@ -165,12 +172,12 @@ static int decode_segreg(struct sigcontext *scp)
 
     case 0xc4:		/* les */
       ret = es_INDEX;
-      _eip += instr_len(csp, x86._32bit);
+      _eip += instr_len(orig_csp, x86._32bit);
       break;
 
     case 0xc5:		/* lds */
       ret = ds_INDEX;
-      _eip += instr_len(csp, x86._32bit);
+      _eip += instr_len(orig_csp, x86._32bit);
       break;
 
     case 0x07:	/* pop es */
@@ -193,17 +200,17 @@ static int decode_segreg(struct sigcontext *scp)
 
 	case 0xb2:	/* lss */
 	  ret = ss_INDEX;
-	  _eip += instr_len(csp, x86._32bit);
+	  _eip += instr_len(orig_csp, x86._32bit);
 	  break;
 
 	case 0xb4:	/* lfs */
 	  ret = fs_INDEX;
-	  _eip += instr_len(csp, x86._32bit);
+	  _eip += instr_len(orig_csp, x86._32bit);
 	  break;
 
 	case 0xb5:	/* lgs */
 	  ret = gs_INDEX;
-	  _eip += instr_len(csp, x86._32bit);
+	  _eip += instr_len(orig_csp, x86._32bit);
 	  break;
       }
       break;

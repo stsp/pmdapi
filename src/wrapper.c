@@ -243,7 +243,7 @@ struct msdos_ops {
     void (*xms_call)(struct RealModeCallStructure *rmreg);
     void (**rmcb_handler)(struct sigcontext *scp,
 	const struct RealModeCallStructure *rmreg);
-    void (**rmcb_ret_handler)(const struct sigcontext *scp,
+    void (**rmcb_ret_handler)(struct sigcontext *scp,
 	struct RealModeCallStructure *rmreg);
     u_short cb_es;
     u_int cb_edi;
@@ -252,7 +252,7 @@ static struct msdos_ops msdos;
 
 int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
 	const struct RealModeCallStructure *),
-	void (*ret_handler[])(const struct sigcontext *,
+	void (*ret_handler[])(struct sigcontext *,
 	struct RealModeCallStructure *),
 	int num, far_t *r_cbks)
 {
