@@ -121,6 +121,7 @@ void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
         memset(LINEAR2UNIX(dos_addr), (val), (n))
 #define MEMCPY_2UNIX(unix_addr, dos_addr, n) \
 	memcpy((unix_addr), LINEAR2UNIX(dos_addr), (n))
+#define memcpy_dos2dos(dest, src, n) MEMCPY_DOS2DOS(dest, src, n)
 static inline void *LINEAR2UNIX(unsigned int addr)
 {
 	return (void*)addr;
