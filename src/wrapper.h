@@ -66,7 +66,8 @@ extern int SetSegmentBaseAddress(unsigned short selector,
 unsigned long GetSegmentLimit(unsigned short);
 extern unsigned int GetSegmentBase(unsigned short);
 extern unsigned short CreateAliasDescriptor(unsigned short selector);
-extern int SetDescriptorAccessRights(unsigned short selector, unsigned short type_byte);
+extern int SetDescriptorAccessRights(unsigned short selector,
+	unsigned short acc_rights);
 int dpmi_mhp_get_selector_size(int sel);
 extern int SetSegmentLimit(unsigned short, unsigned int);
 extern unsigned short AllocateDescriptors(int);

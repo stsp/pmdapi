@@ -215,20 +215,17 @@ int DPMI_allocate_specific_ldt_descriptor(unsigned short selector)
 
 int SetDescriptor(unsigned short selector, unsigned int *lp)
 {
-    /* FIXME */
-    return 0;
+    return __dpmi_set_descriptor(selector, lp);
 }
 
-int SetDescriptorAccessRights(unsigned short selector, unsigned short type_byte)
+int SetDescriptorAccessRights(unsigned short selector, unsigned short acc_rights)
 {
-    /* FIXME */
-    return 0;
+    return __dpmi_set_descriptor_access_rights(selector, acc_rights);
 }
 
 unsigned short CreateAliasDescriptor(unsigned short selector)
 {
-    /* FIXME */
-    return 0;
+    return __dpmi_create_alias_descriptor(selector);
 }
 
 struct msdos_ops {
