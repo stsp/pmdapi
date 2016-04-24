@@ -76,6 +76,7 @@ extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
 extern far_t allocate_realmode_callback(void (*handler)(
 	struct RealModeCallStructure *));
 extern int DPMI_free_realmode_callback(u_short seg, u_short off);
+extern int DPMI_get_save_restore_address(far_t *raddr, struct pmaddr_s *paddr);
 
 extern void copy_context(struct sigcontext *d,
     struct sigcontext *s, int copy_fpu);

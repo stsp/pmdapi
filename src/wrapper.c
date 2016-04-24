@@ -228,107 +228,24 @@ unsigned short CreateAliasDescriptor(unsigned short selector)
     return __dpmi_create_alias_descriptor(selector);
 }
 
-struct msdos_ops {
-    void (*api_call)(struct sigcontext *scp);
-    void (*xms_call)(struct RealModeCallStructure *rmreg);
-    void (**rmcb_handler)(struct sigcontext *scp,
-	const struct RealModeCallStructure *rmreg);
-    void (**rmcb_ret_handler)(struct sigcontext *scp,
-	struct RealModeCallStructure *rmreg);
-    u_short cb_es;
-    u_int cb_edi;
-};
-static struct msdos_ops msdos;
-
-int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
-	const struct RealModeCallStructure *),
-	void (*ret_handler[])(struct sigcontext *,
-	struct RealModeCallStructure *),
-	int num, far_t *r_cbks)
+int DPMI_free_realmode_callback(u_short seg, u_short off)
 {
-//    int i;
-    assert(num <= 3);
-    msdos.rmcb_handler = handler;
-    msdos.rmcb_ret_handler = ret_handler;
-#if 0
-    for (i = 0; i < num; i++)
-	r_cbks[i] = DPMI_allocate_realmode_callback(dpmi_sel(),
-	    get_cb(i), dpmi_data_sel(), DPMI_DATA_OFF(MSDOS_rmcb_data));
-#endif
-    return num;
+    __dpmi_raddr addr = (__dpmi_raddr){ .segment = seg, .offset16 = off };
+    return __dpmi_free_real_mode_callback(&addr);
 }
 
-void free_realmode_callbacks(far_t *cbks, int num)
+int DPMI_get_save_restore_address(far_t *raddr, struct pmaddr_s *paddr)
 {
-    int i;
-    for (i = 0; i < num; i++) {
-	__dpmi_raddr addr = {
-		.segment = cbks[i].segment, .offset16 = cbks[i].offset };
-	__dpmi_free_real_mode_callback(&addr);
-    }
-}
-
-void do_api_call(struct sigcontext *scp)
-{
-    msdos.api_call(scp);
-}
-
-struct pmaddr_s get_pm_handler(enum MsdOpIds id,
-	void (*handler)(struct sigcontext *))
-{
-    struct pmaddr_s ret;
-    switch (id) {
-    case API_CALL:
-	msdos.api_call = handler;
-	ret.selector = _my_cs();
-#if 0
-	ret.offset = (u_int)api_call_ent;
-#endif
-	break;
-    default:
-	dosemu_error("unknown pm handler\n");
-	ret = (struct pmaddr_s){ 0, 0 };
-	break;
-    }
-    return ret;
-}
-
-struct pmaddr_s get_pmrm_handler(enum MsdOpIds id, void (*handler)(
-	struct RealModeCallStructure *))
-{
-    struct pmaddr_s ret;
-    switch (id) {
-    case XMS_CALL:
-	msdos.xms_call = handler;
-	ret.selector = _my_cs();
-#if 0
-	ret.offset = DPMI_SEL_OFF(MSDOS_XMS_call);
-#endif
-	break;
-    default:
-	dosemu_error("unknown pmrm handler\n");
-	ret = (struct pmaddr_s){ 0, 0 };
-	break;
-    }
-    return ret;
-}
-
-far_t get_lr_helper(far_t rmcb)
-{
-  far_t ret = {};
-  return ret;
-}
-
-far_t get_lw_helper(far_t rmcb)
-{
-  far_t ret = {};
-  return ret;
-}
-
-far_t get_exec_helper(void)
-{
-  far_t ret = {};
-  return ret;
+    __dpmi_raddr rm;
+    __dpmi_paddr pm;
+    int err = __dpmi_get_state_save_restore_addr(&rm, &pm);
+    if (err)
+	return err;
+    raddr->segment = rm.segment;
+    raddr->offset = rm.offset16;
+    paddr->selector = pm.selector;
+    paddr->offset = pm.offset32;
+    return 0;
 }
 
 u_short dos_get_psp(void)
