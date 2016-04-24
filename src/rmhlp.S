@@ -7,12 +7,7 @@ MSDOS_exec_start:
 	pushw %bp
 	movw %sp, %bp
 	pushw %ax
-	pushw $0
-	/* get flags and check IF */
-	movw 3*2(%bp), %ax
-	testw $0x200, %ax
-	jz 1f
-	sti
+	pushw $0	# -4(%bp) - placeholder for buffer ptr
 1:
 	subw %cs:MSDOS_exec_buf_sz-bios_f000, %sp
 	movw %sp, -4(%bp)
@@ -43,7 +38,7 @@ MSDOS_exec_start:
 	addw %cs:MSDOS_exec_buf_sz-bios_f000, %sp
 	addw $4, %sp
 	popw %bp
-	lret $2
+	iret
 
         .align 4,0
 s_r_addr:
