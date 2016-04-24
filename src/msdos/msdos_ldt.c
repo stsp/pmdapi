@@ -29,29 +29,32 @@
 #include "dosemu_debug.h"
 #include "msdos_ldt.h"
 
-#define LDT_INIT_LIMIT 0xfff
-
 static unsigned char *ldt_backbuf;
 static unsigned char *ldt_alias;
 static unsigned short dpmi_ldt_alias;
+static int entry_upd;
 
 int msdos_ldt_setup(unsigned char *backbuf, unsigned char *alias)
 {
     /* NULL can be passed as backbuf if you have R/W LDT alias */
     ldt_backbuf = backbuf;
     ldt_alias = alias;
+    entry_upd = -1;
     return 1;
 }
 
 u_short msdos_ldt_init(int clnt_num)
 {
+    unsigned lim;
     if (clnt_num > 1)		// one LDT alias for all clients
 	return dpmi_ldt_alias;
     dpmi_ldt_alias = AllocateDescriptors(1);
     if (!dpmi_ldt_alias)
 	return 0;
+    lim = ((dpmi_ldt_alias >> 3) + 1) * LDT_ENTRY_SIZE;
+    /* need to set limit before base_addr to avoid ldt autoexpanding */
+    SetSegmentLimit(dpmi_ldt_alias, PAGE_ALIGN(lim) - 1);
     SetSegmentBaseAddress(dpmi_ldt_alias, DOSADDR_REL(ldt_alias));
-    SetSegmentLimit(dpmi_ldt_alias, LDT_INIT_LIMIT);
     return dpmi_ldt_alias;
 }
 
@@ -397,13 +400,13 @@ void msdos_ldt_update(int entry, u_char *buf, int len)
 {
   if (dpmi_ldt_alias) {
     unsigned limit = GetSegmentLimit(dpmi_ldt_alias);
-    unsigned new_len = (entry + 1) * LDT_ENTRY_SIZE;
+    unsigned new_len = entry * LDT_ENTRY_SIZE + len;
     if (limit < new_len - 1) {
       D_printf("DPMI: expanding LDT, old_lim=0x%x\n", limit);
       SetSegmentLimit(dpmi_ldt_alias, PAGE_ALIGN(new_len) - 1);
     }
   }
-  if (ldt_backbuf)
+  if (ldt_backbuf && entry != entry_upd)
     memcpy(&ldt_backbuf[entry * LDT_ENTRY_SIZE], buf, len);
 }
 
@@ -428,6 +431,8 @@ static void direct_ldt_write(int offset, char *buffer, int length)
   for (i = 0; i < length; i++)
     D_printf("0x%02hhx ", buffer[i]);
   D_printf("\n");
+
+  entry_upd = ldt_entry;	// dont update from DPMI callouts
   err = GetDescriptor(selector, (unsigned int *)lp);
   if (err) {
     selector = AllocateDescriptorsAt(selector, 1);
@@ -436,7 +441,7 @@ static void direct_ldt_write(int offset, char *buffer, int length)
   }
   if (err) {
     error("Descriptor allocation at %#x failed\n", ldt_entry);
-    return;
+    goto out;
   }
   if (!(lp[5] & 0x80)) {
     D_printf("LDT: NP\n");
@@ -457,6 +462,8 @@ static void direct_ldt_write(int offset, char *buffer, int length)
     SetDescriptor(selector, (unsigned int *)lp1);
   }
   memcpy(&ldt_backbuf[ldt_entry * LDT_ENTRY_SIZE], lp, LDT_ENTRY_SIZE);
+out:
+  entry_upd = -1;
 }
 
 int msdos_ldt_pagefault(struct sigcontext *scp)
