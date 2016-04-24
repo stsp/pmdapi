@@ -32,9 +32,10 @@
 #include "instr_dec.h"
 #include "msdos_ldt.h"
 #include "msdos_priv.h"
+#include "segreg_priv.h"
 #include "segreg.h"
 
-int msdos_fault(struct sigcontext *scp)
+static enum MfRet msdos_sel_fault(struct sigcontext *scp)
 {
     struct sigcontext new_sct;
     int reg;
@@ -43,7 +44,7 @@ int msdos_fault(struct sigcontext *scp)
 
     D_printf("MSDOS: msdos_fault, err=%#lx\n", _err);
     if ((_err & 0xffff) == 0)	/*  not a selector error */
-	return msdos_ldt_fault(scp);
+	return MFR_NOT_HANDLED;
 
     /* now it is a invalid selector error, try to fix it if it is */
     /* caused by an instruction such as mov Sreg,r/m16            */
@@ -65,17 +66,17 @@ int msdos_fault(struct sigcontext *scp)
     case 0x38:		// ShellShock installer
 	break;
     default:
-	return 0;
+	return MFR_ERROR;
     }
     copy_context(&new_sct, scp, 0);
     reg = decode_segreg(&new_sct);
     if (reg == -1)
-	return 0;
+	return MFR_ERROR;
 #else
     copy_context(&new_sct, scp, 0);
     reg = decode_modify_segreg_insn(&new_sct, 1, &segment);
     if (reg == -1)
-	return 0;
+	return MFR_ERROR;
 
     if (ValidAndUsedSelector(segment)) {
 	/*
@@ -85,7 +86,7 @@ int msdos_fault(struct sigcontext *scp)
 	 */
 	D_printf("MSDOS: msdos_fault: Illegal use of selector %#x\n",
 		 segment);
-	return 0;
+	return MFR_ERROR;
     }
 #endif
 
@@ -102,7 +103,7 @@ int msdos_fault(struct sigcontext *scp)
 	desc = ConvertSegmentToDescriptor(segment);
     }
     if (!desc)
-	return 0;
+	return MFR_ERROR;
 
     /* OKay, all the sanity checks passed. Now we go and fix the selector */
     copy_context(scp, &new_sct, 0);
@@ -128,5 +129,31 @@ int msdos_fault(struct sigcontext *scp)
     }
 
     /* let's hope we fixed the thing, and return */
-    return 1;
+    return MFR_HANDLED;
+}
+
+int msdos_fault(struct sigcontext *scp)
+{
+    enum MfRet ret;
+    uint16_t sel;
+
+#define MR_CHK(r) do { \
+    switch (r) { \
+    case MFR_ERROR: \
+	return 0; \
+    case MFR_HANDLED: \
+	return 1; \
+    case MFR_NOT_HANDLED: \
+	break; \
+    } } while (0)
+    ret = msdos_sel_fault(scp);
+    MR_CHK(ret);
+
+    sel = decode_selector(scp);
+    if (!sel)
+	return 0;
+    ret = msdos_ldt_fault(scp, sel);
+    MR_CHK(ret);
+
+    return 0;
 }
