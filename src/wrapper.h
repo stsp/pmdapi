@@ -50,7 +50,6 @@ struct RealModeCallStructure {
 int ValidAndUsedSelector(unsigned short selector);
 
 extern int ConvertSegmentToDescriptor(unsigned short segment);
-extern int ConvertSegmentToCodeDescriptor(unsigned short segment);
 
 dpmi_pm_block DPMImalloc(unsigned long size);
 int DPMIfree(unsigned long handle);
@@ -60,8 +59,7 @@ extern DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num);
 extern void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc);
 void GetFreeMemoryInformation(unsigned int *lp);
 int GetDescriptor(us selector, unsigned int *lp);
-extern unsigned short AllocateDescriptorsAt(unsigned short selector,
-    int number_of_descriptors);
+extern int DPMI_allocate_specific_ldt_descriptor(unsigned short selector);
 extern int SetDescriptor(unsigned short selector, unsigned int *lp);
 extern int SetSegmentBaseAddress(unsigned short selector,
 					unsigned long baseaddr);

@@ -51,11 +51,6 @@ int ConvertSegmentToDescriptor(unsigned short segment)
   return __dpmi_segment_to_descriptor(segment);
 }
 
-int ConvertSegmentToCodeDescriptor(unsigned short segment)
-{
-  return 0;
-}
-
 int SetSegmentBaseAddress(unsigned short selector, unsigned long baseaddr)
 {
   return __dpmi_set_segment_base_address(selector, baseaddr);
@@ -213,11 +208,9 @@ unsigned int GetSegmentBase(unsigned short selector)
   return addr;
 }
 
-unsigned short AllocateDescriptorsAt(unsigned short selector,
-    int number_of_descriptors)
+int DPMI_allocate_specific_ldt_descriptor(unsigned short selector)
 {
-    /* FIXME */
-    return 0;
+    return __dpmi_allocate_specific_ldt_descriptor(selector);
 }
 
 int SetDescriptor(unsigned short selector, unsigned int *lp)
