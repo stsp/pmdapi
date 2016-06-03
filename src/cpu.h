@@ -2,6 +2,7 @@
 #define CPU_H
 
 #include <stdint.h>
+#include <string.h>
 
 typedef int                Boolean;
 typedef uint8_t            Bit8u;   /* type of 8 bit unsigned quantity */
