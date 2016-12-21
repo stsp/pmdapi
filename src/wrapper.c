@@ -153,6 +153,16 @@ DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num)
   return addr;
 }
 
+far_t DPMI_get_real_mode_interrupt_vector(int vec)
+{
+    far_t addr;
+    __dpmi_raddr _address;
+    __dpmi_get_real_mode_interrupt_vector(vec, &_address);
+    addr.segment = _address.segment;
+    addr.offset = _address.offset16;
+    return addr;
+}
+
 unsigned long GetFreeMemory(void)
 {
   __dpmi_free_mem_info info;

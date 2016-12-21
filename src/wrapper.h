@@ -57,6 +57,7 @@ dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size);
 
 extern DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num);
 extern void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc);
+extern far_t DPMI_get_real_mode_interrupt_vector(int vec);
 void GetFreeMemoryInformation(unsigned int *lp);
 int GetDescriptor(us selector, unsigned int *lp);
 extern int DPMI_allocate_specific_ldt_descriptor(unsigned short selector);

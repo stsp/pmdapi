@@ -113,9 +113,10 @@ union dword {
 #define READ_DWORDP(addr)	READ_DWORD(DOSADDR_REL(addr))
 #define WRITE_DWORDP(addr, val)	WRITE_DWORD(DOSADDR_REL(addr), val)
 
-#define IOFF(i) READ_WORD(i * 4)
-#define ISEG(i) READ_WORD(i * 4 + 2)
-
+#define get_EFLAGS(flags) ({ \
+  int __flgs = (flags); \
+  (((__flgs & IF) ? __flgs | VIF : __flgs & ~VIF) | IF | IOPL_MASK); \
+})
 #define u_short unsigned short
 
 typedef struct {
