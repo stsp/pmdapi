@@ -102,6 +102,17 @@ void do_pm_int_call16(struct sigcontext *scp, __dpmi_raddr *addr)
   *scp = dos_context;
 }
 
+void do_pm_call(struct sigcontext *scp)
+{
+  if (clnt_is_32) {
+    __dpmi_paddr addr = { .selector = scp->cs, .offset32 = scp->eip };
+    do_pm_int_call32(scp, &addr);
+  } else {
+    __dpmi_raddr addr16 = { .segment = scp->cs, .offset16 = scp->eip };
+    do_pm_int_call16(scp, &addr16);
+  }
+}
+
 void do_rm_int(int inum, __dpmi_regs *regs)
 {
   asm (

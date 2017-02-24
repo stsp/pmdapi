@@ -188,7 +188,7 @@ void *SEL_ADR(unsigned short sel, unsigned int reg)
     return (void *)(uintptr_t)reg;
   }
   /* LDT */
-  return SEL_ADR_LDT(sel, reg, is_32);
+  return SEL_ADR_LDT(sel, reg, clnt_is_32);
 }
 
 void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32)
@@ -236,6 +236,30 @@ int SetDescriptorAccessRights(unsigned short selector, unsigned short acc_rights
 unsigned short CreateAliasDescriptor(unsigned short selector)
 {
     return __dpmi_create_alias_descriptor(selector);
+}
+
+static void *get_handler(u_short sel, int offs)
+{
+    if (sel != _my_cs())
+	return NULL;
+#define RH(n) \
+    if (offs == (uintptr_t)entry_MSDOS_rmcb_call##n) \
+	return entry_MSDOS_rmcb_call##n
+    RH(0);
+    RH(1);
+    RH(2);
+    return NULL;
+}
+
+far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
+       int rm_offs)
+{
+    __dpmi_raddr ret;
+    void *hndl = get_handler(sel, offs);
+    assert(hndl);
+    __dpmi_allocate_real_mode_callback(hndl,
+	    SEL_ADR_LDT(rm_sel, rm_offs, clnt_is_32), &ret);
+    return (far_t){ .segment = ret.segment, .offset = ret.offset16 };
 }
 
 int DPMI_free_realmode_callback(u_short seg, u_short off)

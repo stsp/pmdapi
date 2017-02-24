@@ -21,7 +21,7 @@ static void load_fs_gs()
 void int21_handler(struct sigcontext *scp)
 {
   load_fs_gs();
-  if (is_32) {
+  if (clnt_is_32) {
     do_pm_int_call32(scp, &old_int21);
   } else {
     __dpmi_raddr addr16;
@@ -68,7 +68,7 @@ void entry(unsigned short term, unsigned short handle)
 //  dseg32 = _my_ds();
   current_client = handle;
   addr.selector = _my_cs();
-  if (is_32)
+  if (clnt_is_32)
     addr.offset32 = (unsigned long)dos32_int21;
   else
     addr.offset32 = (unsigned long)dos16_int21;

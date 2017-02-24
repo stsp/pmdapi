@@ -48,6 +48,29 @@ do_int:
       addl   $24, %esp
       ret
 
+.macro _scp_call cname ir
+.globl _entry_\cname
+_entry_\cname:
+    enter $4, $0
+    movl $_\cname, -4(%ebp)
+    call do_int
+    leave
+    \ir
+.endm
+.macro scp_call cname
+    _scp_call \cname lret
+.endm
+.macro scp_call_i cname
+    _scp_call \cname iret
+.endm
+
+scp_call MSDOS_API_call
+scp_call MSDOS_API_WINOS2_call
+scp_call MSDOS_XMS_call
+scp_call_i MSDOS_rmcb_call0
+scp_call_i MSDOS_rmcb_call1
+scp_call_i MSDOS_rmcb_call2
+
 dos_int21:
     enter $4, $0
     movl $_int21_handler, -4(%ebp)
@@ -135,7 +158,7 @@ _dos16_int21:
 
 .globl _entry32
 _entry32:
-    movl $1, _is_32
+    movl $1, _clnt_is_32
 common_entry:
     movl %esp, lss_esp
     mov  %ss, lss_ss
@@ -157,7 +180,7 @@ _code16:
 _entry16:
     pushw %ds
     popw %es
-    movl $0, _is_32-_data16
+    movl $0, _clnt_is_32-_data16
     movw %ax, %dx
     movw %bx, %si
     movw $0, %ax
@@ -202,8 +225,8 @@ _cs32_desc:
 .globl _ds32_desc
 _ds32_desc:
 .long 0,0
-.globl _is_32
-_is_32:
+.globl _clnt_is_32
+_clnt_is_32:
 .long 1
 .globl _data16_end
 _data16_end:

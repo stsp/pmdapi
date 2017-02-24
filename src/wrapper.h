@@ -78,6 +78,8 @@ extern far_t allocate_realmode_callback(void (*handler)(
 	struct RealModeCallStructure *));
 extern int DPMI_free_realmode_callback(u_short seg, u_short off);
 extern int DPMI_get_save_restore_address(far_t *raddr, struct pmaddr_s *paddr);
+extern far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
+	int rm_offs);
 
 extern void copy_context(struct sigcontext *d,
     struct sigcontext *s, int copy_fpu);
@@ -157,8 +159,6 @@ u_short dos_get_psp(void);
 #define VIF_MASK	0x00080000	/* virtual interrupt flag */
 #define VIP_MASK	0x00100000	/* virtual interrupt pending */
 #define ID_MASK		0x00200000
-
-void do_api_call(struct sigcontext *scp);
 
 void wrapper_init(void);
 

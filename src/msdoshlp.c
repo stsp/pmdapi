@@ -33,10 +33,13 @@
 //#include "coopth.h"
 #include "dpmi.h"
 //#include "dpmisel.h"
+#include "calls.h"
+#include "entry.h"
 #include "msdoshlp.h"
 #include <assert.h>
+#include <sys/segments.h>
 
-
+#define MAX_CBKS 3
 struct msdos_ops {
     void (*api_call)(struct sigcontext *scp, void *arg);
     void *api_arg;
@@ -44,10 +47,10 @@ struct msdos_ops {
     void *api_winos2_arg;
     void (*xms_call)(struct RealModeCallStructure *rmreg, void *arg);
     void *xms_arg;
-    void (**rmcb_handler)(struct sigcontext *scp,
+    void (*rmcb_handler[MAX_CBKS])(struct sigcontext *scp,
 	const struct RealModeCallStructure *rmreg, int is_32, void *arg);
-    void *(*rmcb_args)(int idx);
-    void (**rmcb_ret_handler)(struct sigcontext *scp,
+    void *rmcb_arg[MAX_CBKS];
+    void (*rmcb_ret_handler[MAX_CBKS])(struct sigcontext *scp,
 	struct RealModeCallStructure *rmreg, int is_32);
     u_short cb_es;
     u_int cb_edi;
@@ -141,7 +144,29 @@ static void exechlp_setup(void)
     }
 }
 
-#if 0
+#define dpmi_sel() _my_cs()
+#define DPMI_SEL_OFF(x) (uintptr_t)entry_##x
+
+static void handler(struct sigcontext *scp, int n)
+{
+    struct RealModeCallStructure *rmreg;
+    unsigned long base;
+    __dpmi_get_segment_base_address(_es, &base);
+    rmreg = (struct RealModeCallStructure *)(base + _edi);
+    msdos.rmcb_handler[n](scp, rmreg, clnt_is_32, msdos.rmcb_arg[n]);
+    do_pm_call(scp);
+    msdos.rmcb_ret_handler[n](scp, rmreg, clnt_is_32);
+}
+
+#define HNDL(n) \
+void MSDOS_rmcb_call##n(struct sigcontext *scp) \
+{ \
+    handler(scp, n); \
+}
+HNDL(0)
+HNDL(1)
+HNDL(2)
+
 static int get_cb(int num)
 {
     switch (num) {
@@ -154,33 +179,32 @@ static int get_cb(int num)
     }
     return 0;
 }
-#endif
 
-int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
+struct pmaddr_s get_pmcb_handler(void (*handler)(struct sigcontext *,
 	const struct RealModeCallStructure *, int, void *),
-	void *(*args)(int),
-	void (*ret_handler[])(struct sigcontext *,
+	void *arg,
+	void (*ret_handler)(struct sigcontext *,
 	struct RealModeCallStructure *, int),
-	int num, unsigned short rmcb_sel, far_t *r_cbks)
+	int num)
 {
-#if 0
-    int i;
-    assert(num <= 3);
-    msdos.rmcb_handler = handler;
-    msdos.rmcb_args = args;
-    msdos.rmcb_ret_handler = ret_handler;
-    for (i = 0; i < num; i++)
-	r_cbks[i] = DPMI_allocate_realmode_callback(dpmi_sel(),
-	    get_cb(i), rmcb_sel, 0);
-#endif
-    return num;
+    struct pmaddr_s ret;
+    assert(num < MAX_CBKS);
+    msdos.rmcb_handler[num] = handler;
+    msdos.rmcb_arg[num] = arg;
+    msdos.rmcb_ret_handler[num] = ret_handler;
+    ret.selector = dpmi_sel();
+    ret.offset = get_cb(num);
+    return ret;
 }
 
-void free_realmode_callbacks(far_t *cbks, int num)
+void MSDOS_API_call(struct sigcontext *scp)
 {
-    int i;
-    for (i = 0; i < num; i++)
-	DPMI_free_realmode_callback(cbks[i].segment, cbks[i].offset);
+    msdos.api_call(scp, msdos.api_arg);
+}
+
+void MSDOS_API_WINOS2_call(struct sigcontext *scp)
+{
+    msdos.api_winos2_call(scp, msdos.api_winos2_arg);
 }
 
 struct pmaddr_s get_pm_handler(enum MsdOpIds id,
@@ -191,18 +215,14 @@ struct pmaddr_s get_pm_handler(enum MsdOpIds id,
     case API_CALL:
 	msdos.api_call = handler;
 	msdos.api_arg = arg;
-#if 0
 	ret.selector = dpmi_sel();
 	ret.offset = DPMI_SEL_OFF(MSDOS_API_call);
-#endif
 	break;
     case API_WINOS2_CALL:
 	msdos.api_winos2_call = handler;
 	msdos.api_winos2_arg = arg;
-#if 0
 	ret.selector = dpmi_sel();
 	ret.offset = DPMI_SEL_OFF(MSDOS_API_WINOS2_call);
-#endif
 	break;
     default:
 	dosemu_error("unknown pm handler\n");
@@ -210,6 +230,13 @@ struct pmaddr_s get_pm_handler(enum MsdOpIds id,
 	break;
     }
     return ret;
+}
+
+void MSDOS_XMS_call(struct sigcontext *scp)
+{
+    struct RealModeCallStructure rmreg;
+    msdos.xms_call(&rmreg, msdos.api_arg);
+    /* FIXME! do rm call */
 }
 
 struct pmaddr_s get_pmrm_handler(enum MsdOpIds id, void (*handler)(
@@ -220,10 +247,8 @@ struct pmaddr_s get_pmrm_handler(enum MsdOpIds id, void (*handler)(
     case XMS_CALL:
 	msdos.xms_call = handler;
 	msdos.xms_arg = arg;
-#if 0
 	ret.selector = dpmi_sel();
 	ret.offset = DPMI_SEL_OFF(MSDOS_XMS_call);
-#endif
 	break;
     default:
 	dosemu_error("unknown pmrm handler\n");
@@ -261,69 +286,4 @@ far_t get_exec_helper(void)
 {
     exechlp_setup();
     return exec_helper.entry;
-}
-
-void msdos_pm_call(struct sigcontext *scp, int is_32)
-{
-#if 0
-    if (_eip == 1 + DPMI_SEL_OFF(MSDOS_API_call)) {
-	msdos.api_call(scp, msdos.api_arg);
-    } else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_API_WINOS2_call)) {
-	msdos.api_winos2_call(scp, msdos.api_winos2_arg);
-    } else if (_eip >= 1 + DPMI_SEL_OFF(MSDOS_rmcb_call_start) &&
-	    _eip < 1 + DPMI_SEL_OFF(MSDOS_rmcb_call_end)) {
-	int idx, ret;
-	if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_call0)) {
-	    idx = 0;
-	    ret = 0;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_call1)) {
-	    idx = 1;
-	    ret = 0;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_call2)) {
-	    idx = 2;
-	    ret = 0;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_ret0)) {
-	    idx = 0;
-	    ret = 1;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_ret1)) {
-	    idx = 1;
-	    ret = 1;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_ret2)) {
-	    idx = 2;
-	    ret = 1;
-	} else {
-	    error("MSDOS: unknown rmcb %#x\n", _eip);
-	    return;
-	}
-	if (ret) {
-	    struct RealModeCallStructure *rmreg =
-		    SEL_ADR_CLNT(msdos.cb_es, msdos.cb_edi, is_32);
-	    msdos.rmcb_ret_handler[idx](scp, rmreg, is_32);
-	    _es = msdos.cb_es;
-	    _edi = msdos.cb_edi;
-	} else {
-	    struct RealModeCallStructure *rmreg =
-		    SEL_ADR_CLNT(_es, _edi, is_32);
-	    msdos.cb_es = _es;
-	    msdos.cb_edi = _edi;
-	    msdos.rmcb_handler[idx](scp, rmreg, is_32, msdos.rmcb_args(idx));
-	}
-    } else {
-	error("MSDOS: unknown pm call %#x\n", _eip);
-    }
-#endif
-}
-
-int msdos_pre_pm(struct sigcontext *scp,
-		 struct RealModeCallStructure *rmreg)
-{
-#if 0
-    if (_eip == 1 + DPMI_SEL_OFF(MSDOS_XMS_call)) {
-	msdos.xms_call(rmreg, msdos.xms_arg);
-    } else {
-	error("MSDOS: unknown pm call %#x\n", _eip);
-	return 0;
-    }
-#endif
-    return 1;
 }
