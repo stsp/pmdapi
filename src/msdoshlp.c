@@ -161,7 +161,7 @@ int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
 	void *(*args)(int),
 	void (*ret_handler[])(struct sigcontext *,
 	struct RealModeCallStructure *, int),
-	int num, far_t *r_cbks)
+	int num, unsigned short rmcb_sel, far_t *r_cbks)
 {
 #if 0
     int i;
@@ -171,7 +171,7 @@ int allocate_realmode_callbacks(void (*handler[])(struct sigcontext *,
     msdos.rmcb_ret_handler = ret_handler;
     for (i = 0; i < num; i++)
 	r_cbks[i] = DPMI_allocate_realmode_callback(dpmi_sel(),
-	    get_cb(i), dpmi_data_sel(), DPMI_DATA_OFF(MSDOS_rmcb_data));
+	    get_cb(i), rmcb_sel, 0);
 #endif
     return num;
 }

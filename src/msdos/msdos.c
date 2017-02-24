@@ -78,6 +78,7 @@ struct msdos_struct {
     unsigned short lowmem_seg;
     dpmi_pm_block mem_map[MSDOS_MAX_MEM_ALLOCS];
     far_t rmcbs[MAX_RMCBS];
+    unsigned short rmcb_sel;
     int rmcb_alloced;
     u_short ldt_alias;
     u_short ldt_alias_winos2;
@@ -89,6 +90,8 @@ static int msdos_client_num = 0;
 static int ems_frame_mapped;
 static int ems_handle;
 #define MSDOS_EMS_PAGES 4
+
+static unsigned int msdos_malloc(unsigned long size);
 
 static void *cbk_args(int idx)
 {
@@ -148,7 +151,12 @@ void msdos_init(int is_32, unsigned short mseg)
     }
     if (msdos_client_num == 1 ||
 	    msdos_client[msdos_client_num - 2].is_32 != is_32) {
-	callbacks_init(cbk_args, MSDOS_CLIENT.rmcbs);
+	int len = sizeof(struct RealModeCallStructure);
+	unsigned int rmcb_mem = msdos_malloc(len);
+	MSDOS_CLIENT.rmcb_sel = AllocateDescriptors(1);
+	SetSegmentBaseAddress(MSDOS_CLIENT.rmcb_sel, rmcb_mem);
+	SetSegmentLimit(MSDOS_CLIENT.rmcb_sel, len - 1);
+	callbacks_init(MSDOS_CLIENT.rmcb_sel, cbk_args, MSDOS_CLIENT.rmcbs);
 	MSDOS_CLIENT.rmcb_alloced = 1;
     } else {
 	memcpy(MSDOS_CLIENT.rmcbs, msdos_client[msdos_client_num - 2].rmcbs,
@@ -165,13 +173,42 @@ void msdos_init(int is_32, unsigned short mseg)
               MSDOS_CLIENT.ldt_alias_winos2);
 }
 
+static void msdos_free_mem(void)
+{
+    int i;
+    for (i = 0; i < MSDOS_MAX_MEM_ALLOCS; i++) {
+	if (MSDOS_CLIENT.mem_map[i].size) {
+	    DPMIfree(MSDOS_CLIENT.mem_map[i].handle);
+	    MSDOS_CLIENT.mem_map[i].size = 0;
+	}
+    }
+}
+
+static void msdos_free_descriptors(void)
+{
+    int i;
+    for (i = 0; i < MAX_CNVS; i++) {
+	struct seg_sel *m = &MSDOS_CLIENT.seg_sel_map[i];
+	if (!m->sel)
+	    break;
+	FreeDescriptor(m->sel);
+	m->sel = 0;
+    }
+
+    FreeDescriptor(MSDOS_CLIENT.ldt_alias_winos2);
+}
+
 void msdos_done(void)
 {
-    if (MSDOS_CLIENT.rmcb_alloced)
+    if (MSDOS_CLIENT.rmcb_alloced) {
 	free_realmode_callbacks(MSDOS_CLIENT.rmcbs, MAX_RMCBS);
+	FreeDescriptor(MSDOS_CLIENT.rmcb_sel);
+    }
     if (get_env_sel())
 	write_env_sel(GetSegmentBase(get_env_sel()) >> 4);
     msdos_ldt_done(msdos_client_num);
+    msdos_free_descriptors();
+    msdos_free_mem();
     msdos_client_num--;
     D_printf("MSDOS: done, %i\n", msdos_client_num);
 }
