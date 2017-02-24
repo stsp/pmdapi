@@ -125,3 +125,17 @@ void do_rm_int(int inum, __dpmi_regs *regs)
   :: "b"(inum), "r"(dseg32), "D"(regs)
   : "ax", "cx");
 }
+
+void do_rm_call(__dpmi_regs *regs)
+{
+  asm (
+    "movw $0x301, %%ax\n"
+    "movw $0, %%bx\n"
+    "movw $0, %%cx\n"
+    "pushw %%es\n"
+    "movw %0, %%es\n"
+    "int $0x31\n"
+    "popw %%es\n"
+  :: "r"(dseg32), "D"(regs)
+  : "ax", "bx", "cx");
+}
