@@ -48,6 +48,8 @@ struct msdos_ops {
     void (*xms_call)(const struct sigcontext *scp,
 	struct RealModeCallStructure *rmreg, void *arg);
     void *xms_arg;
+    void (*xms_ret)(struct sigcontext *scp,
+	const struct RealModeCallStructure *);
     void (*rmcb_handler[MAX_CBKS])(struct sigcontext *scp,
 	const struct RealModeCallStructure *rmreg, int is_32, void *arg);
     void *rmcb_arg[MAX_CBKS];
@@ -233,46 +235,26 @@ struct pmaddr_s get_pm_handler(enum MsdOpIds id,
     return ret;
 }
 
-static void rm_to_pm_regs(struct sigcontext *scp,
-			  const struct RealModeCallStructure *rmreg,
-			  unsigned int mask)
-{
-    if (mask & (1 << eflags_INDEX))
-	_eflags = RMREG(flags);
-    if (mask & (1 << eax_INDEX))
-	_eax = RMLWORD(ax);
-    if (mask & (1 << ebx_INDEX))
-	_ebx = RMLWORD(bx);
-    if (mask & (1 << ecx_INDEX))
-	_ecx = RMLWORD(cx);
-    if (mask & (1 << edx_INDEX))
-	_edx = RMLWORD(dx);
-    if (mask & (1 << esi_INDEX))
-	_esi = RMLWORD(si);
-    if (mask & (1 << edi_INDEX))
-	_edi = RMLWORD(di);
-    if (mask & (1 << ebp_INDEX))
-	_ebp = RMLWORD(bp);
-}
-
 void MSDOS_XMS_call(struct sigcontext *scp)
 {
-    struct RealModeCallStructure rmreg;
-    /* FIXME! assign cs/ip, ss/sp */
-    msdos.xms_call(scp, &rmreg, msdos.api_arg);
+    struct RealModeCallStructure rmreg = {};
+    msdos.xms_call(scp, &rmreg, msdos.xms_arg);
     do_rm_call(&rmreg);
-    rm_to_pm_regs(scp, &rmreg, ~(1 << ebp_INDEX));
+    msdos.xms_ret(scp, &rmreg);
 }
 
 struct pmaddr_s get_pmrm_handler(enum MsdOpIds id, void (*handler)(
-	const struct sigcontext *scp,
-	struct RealModeCallStructure *, void *), void *arg)
+	const struct sigcontext *, struct RealModeCallStructure *, void *),
+	void *arg,
+	void (*ret_handler)(
+	struct sigcontext *, const struct RealModeCallStructure *))
 {
     struct pmaddr_s ret;
     switch (id) {
     case XMS_CALL:
 	msdos.xms_call = handler;
 	msdos.xms_arg = arg;
+	msdos.xms_ret = ret_handler;
 	ret.selector = dpmi_sel();
 	ret.offset = DPMI_SEL_OFF(MSDOS_XMS_call);
 	break;

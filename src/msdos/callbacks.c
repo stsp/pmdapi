@@ -230,13 +230,18 @@ void xms_call(const struct sigcontext *scp,
 	struct RealModeCallStructure *rmreg, void *arg)
 {
     far_t *XMS_call = arg;
-
     int rmask = (1 << cs_INDEX) |
 	(1 << eip_INDEX) | (1 << ss_INDEX) | (1 << esp_INDEX);
     D_printf("MSDOS: XMS call to 0x%x:0x%x\n",
 	     XMS_call->segment, XMS_call->offset);
     pm_to_rm_regs(scp, rmreg, ~rmask);
     do_call_to(XMS_call->segment, XMS_call->offset, rmreg, rmask);
+}
+
+void xms_ret(struct sigcontext *scp, const struct RealModeCallStructure *rmreg)
+{
+    rm_to_pm_regs(scp, rmreg, ~0);
+    D_printf("MSDOS: XMS call return\n");
 }
 
 static void rmcb_handler(struct sigcontext *scp,
