@@ -20,6 +20,9 @@ typedef uint32_t dosaddr_t;
 #define PAGE_ALIGN(addr)	(((addr)+PAGE_SIZE-1)&PAGE_MASK)
 #define DPMI_page_size		4096	/* 4096 bytes per page */
 
+#define dpmi_sel() _my_cs()
+#define DPMI_SEL_OFF(x) (uintptr_t)entry_##x
+
 enum { es_INDEX, cs_INDEX, ss_INDEX, ds_INDEX, fs_INDEX, gs_INDEX,
   eax_INDEX, ebx_INDEX, ecx_INDEX, edx_INDEX, esi_INDEX, edi_INDEX,
   ebp_INDEX, esp_INDEX, eip_INDEX, eflags_INDEX };
