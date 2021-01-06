@@ -65,7 +65,7 @@ void entry(unsigned short term, unsigned short handle)
     }
   }
   load_fs_gs();
-//  dseg32 = _my_ds();
+  dseg32 = _my_ds();
   current_client = handle;
   addr.selector = _my_cs();
   if (clnt_is_32)
