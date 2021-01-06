@@ -9,9 +9,9 @@
 #include "desc.h"
 #include "startup.h"
 
-int current_client;
 __dpmi_paddr old_int21;
-static short fs, gs;
+#define MAX_CLIENTS 32
+static short fs[MAX_CLIENTS], gs[MAX_CLIENTS];
 
 static void dos_crlf(char *msg, int len)
 {
@@ -86,9 +86,9 @@ static void done(unsigned short handle)
   load_fs_gs();
   __dpmi_set_protected_mode_interrupt_vector(0x21, &old_int21);
   if (have_fs)
-    __dpmi_free_ldt_descriptor(fs);
+    __dpmi_free_ldt_descriptor(fs[handle]);
   if (have_gs)
-    __dpmi_free_ldt_descriptor(gs);
+    __dpmi_free_ldt_descriptor(gs[handle]);
 }
 
 void entry(unsigned short term, unsigned short handle)
@@ -99,24 +99,23 @@ void entry(unsigned short term, unsigned short handle)
     return done(handle);
 
   if (have_fs) {
-    if ((fs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
+    if ((fs[handle] = __dpmi_allocate_ldt_descriptors(1)) == -1) {
       return;
     }
-    if (__dpmi_set_descriptor(fs, fs_desc) == -1) {
+    if (__dpmi_set_descriptor(fs[handle], fs_desc) == -1) {
       return;
     }
   }
   if (have_gs) {
-    if ((gs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
+    if ((gs[handle] = __dpmi_allocate_ldt_descriptors(1)) == -1) {
       return;
     }
-    if (__dpmi_set_descriptor(gs, gs_desc) == -1) {
+    if (__dpmi_set_descriptor(gs[handle], gs_desc) == -1) {
       return;
     }
   }
   load_fs_gs();
   dseg32 = _my_ds();
-  current_client = handle;
   addr.selector = _my_cs();
   if (clnt_is_32)
     addr.offset32 = (unsigned long)dos32_int21;
