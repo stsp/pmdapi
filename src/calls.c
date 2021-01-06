@@ -119,7 +119,7 @@ void do_rm_int(int inum, __dpmi_regs *regs)
     "movw $0x300, %%ax\n"
     "movw $0, %%cx\n"
     "pushw %%es\n"
-    "movw %1, %%es\n"
+    "movw %w1, %%es\n"
     "int $0x31\n"
     "popw %%es\n"
   :: "b"(inum), "r"(dseg32), "D"(regs)
@@ -133,7 +133,7 @@ void do_rm_call(__dpmi_regs *regs)
     "movw $0, %%bx\n"
     "movw $0, %%cx\n"
     "pushw %%es\n"
-    "movw %0, %%es\n"
+    "movw %w0, %%es\n"
     "int $0x31\n"
     "popw %%es\n"
   :: "r"(dseg32), "D"(regs)
