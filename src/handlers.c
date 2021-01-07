@@ -9,6 +9,7 @@
 #include "desc.h"
 #include "startup.h"
 
+static int current_client;
 __dpmi_paddr old_int21;
 #define MAX_CLIENTS 32
 static short fs[MAX_CLIENTS], gs[MAX_CLIENTS];
@@ -30,7 +31,7 @@ static void dos_crlf(char *msg, int len)
 #define PRINTF(n) __attribute__((format(printf, n, n + 1)))
 
 PRINTF(1)
-static int dos_fprintf(const char *format, ...)
+static int dos_printf(const char *format, ...)
 {
   char msg[1024];
   va_list args;
@@ -45,7 +46,7 @@ static int dos_fprintf(const char *format, ...)
 }
 
 PRINTF(1)
-static int emu_fprintf(const char *format, ...)
+static int emu_printf(const char *format, ...)
 {
   char msg[1024];
   va_list args;
@@ -59,19 +60,19 @@ static int emu_fprintf(const char *format, ...)
   return ret;
 }
 
-static void load_fs_gs()
+static void load_fs_gs(unsigned short handle)
 {
   if (have_fs)
-    asm volatile ("movl %0, %%fs\n" :: "a"((unsigned long)fs));
+    asm volatile ("movl %0, %%fs\n" :: "a"((unsigned long)fs[handle]));
   if (have_gs)
-    asm volatile ("movl %0, %%gs\n":: "a"((unsigned long)gs));
+    asm volatile ("movl %0, %%gs\n":: "a"((unsigned long)gs[handle]));
 }
 
 void int21_handler(struct sigcontext *scp)
 {
-  load_fs_gs();
+  load_fs_gs(current_client);
   if (clnt_is_32) {
-    emu_fprintf("call %x:%lx\n", old_int21.selector, old_int21.offset32);
+    emu_printf("call %x:%lx\n", old_int21.selector, old_int21.offset32);
     do_pm_int_call32(scp, &old_int21);
   } else {
     __dpmi_raddr addr16;
@@ -83,7 +84,7 @@ void int21_handler(struct sigcontext *scp)
 
 static void done(unsigned short handle)
 {
-  load_fs_gs();
+  load_fs_gs(handle);
   __dpmi_set_protected_mode_interrupt_vector(0x21, &old_int21);
   if (have_fs)
     __dpmi_free_ldt_descriptor(fs[handle]);
@@ -95,6 +96,7 @@ void entry(unsigned short term, unsigned short handle)
 {
   __dpmi_paddr addr;
 
+  emu_printf("entry %i %i\n", term, handle);
   if (term)
     return done(handle);
 
@@ -114,7 +116,8 @@ void entry(unsigned short term, unsigned short handle)
       return;
     }
   }
-  load_fs_gs();
+  load_fs_gs(handle);
+  current_client = handle;
   dseg32 = _my_ds();
   addr.selector = _my_cs();
   if (clnt_is_32)
@@ -124,7 +127,7 @@ void entry(unsigned short term, unsigned short handle)
   if (__dpmi_get_protected_mode_interrupt_vector(0x21, &old_int21) == -1) {
     return;
   }
-  dos_fprintf("old %x:%lx new %x:%lx\n",
+  dos_printf("old %x:%lx new %x:%lx\n",
     old_int21.selector, old_int21.offset32, addr.selector, addr.offset32);
   if (__dpmi_set_protected_mode_interrupt_vector(0x21, &addr) == -1) {
     return;
