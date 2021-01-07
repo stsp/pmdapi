@@ -31,5 +31,7 @@ extern void entry_MSDOS_rmcb_call0(void);
 extern void entry_MSDOS_rmcb_call1(void);
 extern void entry_MSDOS_rmcb_call2(void);
 
+void entry(unsigned short term, unsigned short handle, short prev);
+
 #endif
 #endif

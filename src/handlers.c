@@ -12,7 +12,12 @@
 static int current_client;
 __dpmi_paddr old_int21;
 #define MAX_CLIENTS 32
-static short fs[MAX_CLIENTS], gs[MAX_CLIENTS];
+struct segregs {
+    unsigned short ds;
+    unsigned short fs;
+    unsigned short gs;
+};
+static struct segregs sr[MAX_CLIENTS];
 
 static void dos_crlf(char *msg, int len)
 {
@@ -63,9 +68,9 @@ static int emu_printf(const char *format, ...)
 static void load_fs_gs(unsigned short handle)
 {
   if (have_fs)
-    asm volatile ("movl %0, %%fs\n" :: "a"((unsigned long)fs[handle]));
+    asm volatile ("movl %0, %%fs\n" :: "a"((unsigned long)sr[handle].fs));
   if (have_gs)
-    asm volatile ("movl %0, %%gs\n":: "a"((unsigned long)gs[handle]));
+    asm volatile ("movl %0, %%gs\n":: "a"((unsigned long)sr[handle].gs));
 }
 
 void int21_handler(struct sigcontext *scp)
@@ -82,43 +87,51 @@ void int21_handler(struct sigcontext *scp)
   }
 }
 
-static void done(unsigned short handle)
+static void done(unsigned short handle, short prev)
 {
   load_fs_gs(handle);
   __dpmi_set_protected_mode_interrupt_vector(0x21, &old_int21);
   if (have_fs)
-    __dpmi_free_ldt_descriptor(fs[handle]);
+    __dpmi_free_ldt_descriptor(sr[handle].fs);
   if (have_gs)
-    __dpmi_free_ldt_descriptor(gs[handle]);
+    __dpmi_free_ldt_descriptor(sr[handle].gs);
+
+  if (prev != -1) {
+    load_fs_gs(prev);
+    dseg32 = sr[prev].ds;
+    current_client = prev;
+  }
 }
 
-void entry(unsigned short term, unsigned short handle)
+void entry(unsigned short term, unsigned short handle, short prev)
 {
   __dpmi_paddr addr;
 
-  emu_printf("entry %i %i\n", term, handle);
+  emu_printf("entry %i %i %i\n", term, handle, prev);
   if (term)
-    return done(handle);
+    return done(handle, prev);
 
   if (have_fs) {
-    if ((fs[handle] = __dpmi_allocate_ldt_descriptors(1)) == -1) {
+    if ((sr[handle].fs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
       return;
     }
-    if (__dpmi_set_descriptor(fs[handle], fs_desc) == -1) {
+    if (__dpmi_set_descriptor(sr[handle].fs, fs_desc) == -1) {
       return;
     }
   }
   if (have_gs) {
-    if ((gs[handle] = __dpmi_allocate_ldt_descriptors(1)) == -1) {
+    if ((sr[handle].gs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
       return;
     }
-    if (__dpmi_set_descriptor(gs[handle], gs_desc) == -1) {
+    if (__dpmi_set_descriptor(sr[handle].gs, gs_desc) == -1) {
       return;
     }
   }
   load_fs_gs(handle);
+  sr[handle].ds = _my_ds();
+  dseg32 = sr[handle].ds;
   current_client = handle;
-  dseg32 = _my_ds();
+
   addr.selector = _my_cs();
   if (clnt_is_32)
     addr.offset32 = (unsigned long)dos32_int21;

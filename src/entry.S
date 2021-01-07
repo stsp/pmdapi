@@ -166,6 +166,7 @@ common_entry:
     movl %esi, lss_ss1
     movl $(stack+stack_size), lss_esp1
     lss lss_esp1, %esp
+    pushl %ecx
     pushl %ebx
     pushl %eax
     call _entry
