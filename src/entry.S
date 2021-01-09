@@ -210,7 +210,7 @@ _entry16:
     movw %si, %bx
     pushw $common_entry
     movzwl %sp, %esi
-    data32 addr32 lcall *%ss:(%esi)
+    lcalll *%ss:(%esi)
     addw $8, %sp
 2:
     lret
