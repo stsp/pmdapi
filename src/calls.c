@@ -73,7 +73,7 @@ void do_pm_int_call32(struct sigcontext *scp, __dpmi_paddr *addr)
   SWITCH_STACK(dos_context.esp_at_signal);
   asm volatile (
     "pushfl\n"
-    "lcall *%%cs:%0\n"
+    "lcalll *%%cs:%0\n"
     :: "m"(saddr)
   );
   SWITCH_STACK(saved_context.esp_at_signal);
@@ -93,7 +93,7 @@ void do_pm_int_call16(struct sigcontext *scp, __dpmi_raddr *addr)
   SWITCH_STACK(dos_context.esp_at_signal);
   asm volatile (
     "pushfw\n"
-    "data16 lcall *%%cs:%0\n"
+    "lcallw *%%cs:%0\n"
     :: "m"(saddr)
   );
   SWITCH_STACK(saved_context.esp_at_signal);
