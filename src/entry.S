@@ -153,7 +153,7 @@ _dos16_int21:
     addl $16, %esp
     pushl %cs:tmp_flags
     popfl
-    data16 lret $2
+    lretw $2
 
 .globl _entry32
 _entry32:
