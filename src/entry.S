@@ -184,6 +184,8 @@ _entry16:
     pushw %ax
     pushw %bx
     pushw %cx
+    orw %ax, %ax
+    jnz 3f
     movw $0, %ax
     movw $2, %cx
     int $0x31
@@ -196,11 +198,14 @@ _entry16:
     movw $(_ds32_desc-_data16), %di
     int $0x31
     jc 1f
-    movw %bx, %ds
+    movw %bx, %si
     addw %cx, %bx
     movw $(_cs32_desc-_data16), %di
     int $0x31
     jc 1f
+    movw %bx, cseg32_16-_data16
+    movw %si, %ds
+4:
     popw %cx
     popw %si
     popw %ax
@@ -219,6 +224,11 @@ _entry16:
     popw %bx
     popw %ax
     jmp 2b
+3:
+    movw cseg32_16-_data16, %bx
+    movw _dseg32-_data16, %di
+    movw %di, %ds
+    jmp 4b
 .globl _code16_end
 _code16_end:
 .code32
@@ -238,6 +248,8 @@ _clnt_is_32:
 .long 1
 .globl _dseg32
 _dseg32:
+.long 0
+cseg32_16:
 .long 0
 .globl _data16_end
 _data16_end:
