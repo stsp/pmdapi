@@ -19,6 +19,9 @@ struct clnt {
 };
 static struct clnt sr[MAX_CLIENTS];
 
+#define PRINTF(n) __attribute__((format(printf, n, n + 1)))
+
+#if 0
 static void dos_crlf(char *msg, int len)
 {
   char *p;
@@ -32,8 +35,6 @@ static void dos_crlf(char *msg, int len)
     p += 2;
   }
 }
-
-#define PRINTF(n) __attribute__((format(printf, n, n + 1)))
 
 PRINTF(1)
 static int dos_printf(const char *format, ...)
@@ -49,6 +50,7 @@ static int dos_printf(const char *format, ...)
   asm volatile("int $0x21\n" :: "a"(0x900), "d"(msg) : "cc");
   return ret;
 }
+#endif
 
 PRINTF(1)
 static int emu_printf(const char *format, ...)
@@ -143,10 +145,11 @@ void entry(unsigned short term, unsigned short handle, short prev)
       &sr[current_client].old_int21) == -1) {
     return;
   }
-  dos_printf("old %x:%lx new %x:%lx\n",
+  emu_printf("old %x:%lx new %x:%lx\n",
       sr[current_client].old_int21.selector,
       sr[current_client].old_int21.offset32,
       addr.selector, addr.offset32);
+  emu_printf("my_ds: 0x%x my_cs: 0x%x\n", _my_ds(), _my_cs());
   if (__dpmi_set_protected_mode_interrupt_vector(0x21, &addr) == -1) {
     return;
   }
