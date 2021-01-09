@@ -10,14 +10,14 @@
 #include "startup.h"
 
 static int current_client;
-__dpmi_paddr old_int21;
 #define MAX_CLIENTS 32
-struct segregs {
+struct clnt {
     unsigned short ds;
     unsigned short fs;
     unsigned short gs;
+    __dpmi_paddr old_int21;
 };
-static struct segregs sr[MAX_CLIENTS];
+static struct clnt sr[MAX_CLIENTS];
 
 static void dos_crlf(char *msg, int len)
 {
@@ -77,12 +77,13 @@ void int21_handler(struct sigcontext *scp)
 {
   load_fs_gs(current_client);
   if (clnt_is_32) {
-    emu_printf("call %x:%lx\n", old_int21.selector, old_int21.offset32);
-    do_pm_int_call32(scp, &old_int21);
+    __dpmi_paddr *old_int21 = &sr[current_client].old_int21;
+    emu_printf("call %x:%lx\n", old_int21->selector, old_int21->offset32);
+    do_pm_int_call32(scp, old_int21);
   } else {
     __dpmi_raddr addr16;
-    addr16.offset16 = old_int21.offset32;
-    addr16.segment = old_int21.selector;
+    addr16.offset16 = sr[current_client].old_int21.offset32;
+    addr16.segment = sr[current_client].old_int21.selector;
     do_pm_int_call16(scp, &addr16);
   }
 }
@@ -90,7 +91,8 @@ void int21_handler(struct sigcontext *scp)
 static void done(unsigned short handle, short prev)
 {
   load_fs_gs(handle);
-  __dpmi_set_protected_mode_interrupt_vector(0x21, &old_int21);
+  __dpmi_set_protected_mode_interrupt_vector(0x21,
+      &sr[current_client].old_int21);
   if (have_fs)
     __dpmi_free_ldt_descriptor(sr[handle].fs);
   if (have_gs)
@@ -137,11 +139,14 @@ void entry(unsigned short term, unsigned short handle, short prev)
     addr.offset32 = (unsigned long)dos32_int21;
   else
     addr.offset32 = (unsigned long)dos16_int21;
-  if (__dpmi_get_protected_mode_interrupt_vector(0x21, &old_int21) == -1) {
+  if (__dpmi_get_protected_mode_interrupt_vector(0x21,
+      &sr[current_client].old_int21) == -1) {
     return;
   }
   dos_printf("old %x:%lx new %x:%lx\n",
-    old_int21.selector, old_int21.offset32, addr.selector, addr.offset32);
+      sr[current_client].old_int21.selector,
+      sr[current_client].old_int21.offset32,
+      addr.selector, addr.offset32);
   if (__dpmi_set_protected_mode_interrupt_vector(0x21, &addr) == -1) {
     return;
   }
