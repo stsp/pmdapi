@@ -181,8 +181,9 @@ _entry16:
     pushw %ds
     popw %es
     movl $0, _clnt_is_32-_data16
-    movw %ax, %dx
-    movw %bx, %si
+    pushw %ax
+    pushw %bx
+    pushw %cx
     movw $0, %ax
     movw $2, %cx
     int $0x31
@@ -200,17 +201,24 @@ _entry16:
     movw $(_cs32_desc-_data16), %di
     int $0x31
     jc 1f
+    popw %cx
+    popw %si
+    popw %ax
     pushw $0
     pushw %bx
     pushw $0
-    pushw $common_entry
-    movw %dx, %ax
     movw %si, %bx
+    pushw $common_entry
     movzwl %sp, %esi
     data32 addr32 lcall *%ss:(%esi)
     addw $8, %sp
-1:
+2:
     lret
+1:
+    popw %cx
+    popw %bx
+    popw %ax
+    jmp 2b
 .globl _code16_end
 _code16_end:
 .code32
