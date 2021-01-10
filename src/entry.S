@@ -85,10 +85,10 @@ _dos32_int21:
     movl %cs:_dseg32, %edi
     movl %edi, %ds
     mov  %ss, tmp_ss
-    movl %esp, tmp_esp
-    addl $12, tmp_esp
     pushfl
     popl tmp_flags
+    movl %esp, tmp_esp
+    addl $12, tmp_esp
     popl %ds
     movl %ss, %esi
     cmpw %si, %cs:_dseg32
@@ -125,10 +125,10 @@ _dos16_int21:
     movl %cs:_dseg32, %edi
     movl %edi, %ds
     mov  %ss, tmp_ss
-    movl %esp, tmp_esp
-    addl $12, tmp_esp
     pushfl
     popl tmp_flags
+    movl %esp, tmp_esp
+    addl $12, tmp_esp
     popl %ds
     movl %ss, %esi
     cmpw %si, %di
