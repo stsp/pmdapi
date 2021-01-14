@@ -8,6 +8,7 @@
 #include "calls.h"
 #include "desc.h"
 #include "startup.h"
+#include "handlers.h"
 
 static int current_client;
 #define MAX_CLIENTS 32
@@ -18,8 +19,6 @@ struct clnt {
     __dpmi_paddr old_int21;
 };
 static struct clnt sr[MAX_CLIENTS];
-
-#define PRINTF(n) __attribute__((format(printf, n, n + 1)))
 
 #if 0
 static void dos_crlf(char *msg, int len)
@@ -53,7 +52,7 @@ static int dos_printf(const char *format, ...)
 #endif
 
 PRINTF(1)
-static int emu_printf(const char *format, ...)
+int emu_printf(const char *format, ...)
 {
   char msg[1024];
   va_list args;
@@ -75,18 +74,31 @@ static void load_fs_gs(unsigned short handle)
     asm volatile ("movl %0, %%gs\n":: "a"((unsigned long)sr[handle].gs));
 }
 
+static int thunk_on(int on)
+{
+    char _s;
+    asm volatile(
+      "int $0x2f\n"
+      "setcb %0\n"
+      : "=r"(_s) : "a"(0x168a), "b"(on), "S"("THUNK_16_32x"));
+    return _s;
+}
+
 void int21_handler(struct sigcontext *scp)
 {
+  __dpmi_paddr *old_int21 = &sr[current_client].old_int21;
   load_fs_gs(current_client);
   if (clnt_is_32) {
-    __dpmi_paddr *old_int21 = &sr[current_client].old_int21;
     emu_printf("call %x:%lx\n", old_int21->selector, old_int21->offset32);
     do_pm_int_call32(scp, old_int21);
   } else {
     __dpmi_raddr addr16;
-    addr16.offset16 = sr[current_client].old_int21.offset32;
-    addr16.segment = sr[current_client].old_int21.selector;
+    addr16.offset16 = old_int21->offset32;
+    addr16.segment = old_int21->selector;
+    emu_printf("call16 %x:%lx\n", old_int21->selector, old_int21->offset32);
+    thunk_on(0);
     do_pm_int_call16(scp, &addr16);
+    thunk_on(1);
   }
 }
 
@@ -105,15 +117,23 @@ static void done(unsigned short handle, short prev)
     dseg32 = sr[prev].ds;
     current_client = prev;
   }
+
+  thunk_on(0);
 }
 
 void entry(unsigned short term, unsigned short handle, short prev)
 {
   __dpmi_paddr addr;
+  int err;
 
-  emu_printf("entry %i %i %i\n", term, handle, prev);
   if (term)
     return done(handle, prev);
+
+  err = thunk_on(1);
+  if (err)
+    printf("THUNK_16_32x not supported\n");
+  /* can print only after thunk enabled */
+  emu_printf("entry %i %i %i\n", term, handle, prev);
 
   if (have_fs) {
     if ((sr[handle].fs = __dpmi_allocate_ldt_descriptors(1)) == -1) {

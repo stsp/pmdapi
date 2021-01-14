@@ -6,6 +6,7 @@
 #include "entry.h"
 #include "emmwrp.h"
 #include "wrapper.h"
+#include "handlers.h"
 #include "startup.h"
 
 int have_fs = 0, have_gs = 0;
@@ -78,19 +79,7 @@ int main()
     memcpy(info.data16, desc, sizeof(desc));
 
     info.ip = (unsigned long)entry16 - (unsigned long)code16;
-  }
-  if (cs16) {
-    char nsup = 0;
-    /* enabling the extension is a bit tricky */
     asm volatile("lcalll *%0\n" :: "m"(extapi), "a"(1));
-    asm volatile(
-      "int $0x2f\n"
-      "setcb %0\n"
-      : "=r"(nsup): "a"(0x168a), "S"("THUNK_16_32x"));
-    if (nsup) {
-      printf("THUNK_16_32x not supported\n");
-      return 1;
-    }
   }
 
   if (__dpmi_get_descriptor(cs32, cs32_desc) == -1) {
@@ -124,6 +113,7 @@ int main()
     return 1;
   }
   info.eip = (unsigned long)entry32;
+  emu_printf("eip %lx\n", info.eip);
 
   if (__dpmi_install_resident_service_provider_callback(&info) == -1) {
     printf("inst_res failed\n");
