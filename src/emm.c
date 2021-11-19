@@ -34,7 +34,7 @@ int emm_allocate_handle(int pages_needed)
   __dpmi_regs regs = {0};
   regs.h.ah = ALLOCATE_PAGES;
   regs.x.bx = pages_needed;
-  do_rm_int(EMM_INT, &regs);
+  __dpmi_simulate_real_mode_interrupt(EMM_INT, &regs);
   if (regs.h.ah)
     return -1;
   return regs.x.dx;
@@ -45,7 +45,7 @@ int emm_save_handle_state(int handle)
   __dpmi_regs regs = {0};
   regs.h.ah = SAVE_PAGE_MAP;
   regs.x.dx = handle;
-  do_rm_int(EMM_INT, &regs);
+  __dpmi_simulate_real_mode_interrupt(EMM_INT, &regs);
   if (regs.h.ah)
     return -1;
   return 0;
@@ -56,7 +56,7 @@ int emm_restore_handle_state(int handle)
   __dpmi_regs regs = {0};
   regs.h.ah = RESTORE_PAGE_MAP;
   regs.x.dx = handle;
-  do_rm_int(EMM_INT, &regs);
+  __dpmi_simulate_real_mode_interrupt(EMM_INT, &regs);
   if (regs.h.ah)
     return -1;
   return 0;
@@ -75,7 +75,7 @@ int emm_map_unmap_multi(const u_short *array, int handle, int map_len)
   memcpy((void *)rmaddr, array, arr_len);
   regs.x.ds = rmseg;
   regs.x.si = 0;
-  do_rm_int(EMM_INT, &regs);
+  __dpmi_simulate_real_mode_interrupt(EMM_INT, &regs);
   if (regs.h.ah)
     return -1;
   return 0;

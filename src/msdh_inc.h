@@ -32,7 +32,7 @@ void MSDOS_XMS_call(struct sigcontext *scp)
 {
     struct RealModeCallStructure rmreg = {};
     msdos.xms_call(scp, &rmreg, msdos.xms_arg);
-    do_rm_call(&rmreg);
+    __dpmi_simulate_real_mode_procedure_retf(&rmreg);
     msdos.xms_ret(scp, &rmreg);
 }
 

@@ -286,6 +286,6 @@ u_short dos_get_psp(void)
 {
   __dpmi_regs regs = {0};
   regs.h.ah = 0x51;
-  do_rm_int(0x21, &regs);
+  __dpmi_simulate_real_mode_interrupt(0x21, &regs);
   return regs.x.bx;
 }
