@@ -8,7 +8,7 @@
 #include "cpu.h"
 #include "entry.h"
 #include "calls.h"
-#include "dpmi.h"
+#include "emudpmi.h"
 #include "msdoshlp.h"
 #include "wrapper.h"
 

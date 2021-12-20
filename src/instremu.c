@@ -25,9 +25,9 @@
 /* 6 logical and arithmetic "RISC" core functions
    follow
 */
-unsigned char instr_binary_byte(unsigned char op, unsigned char op1, unsigned char op2, unsigned long *eflags)
+unsigned char instr_binary_byte(unsigned char op, unsigned char op1, unsigned char op2, ULONG *eflags)
 {
-  unsigned long flags;
+  ULONG flags;
 
   switch (op&0x7){
   case 1: /* or */
@@ -61,9 +61,9 @@ unsigned char instr_binary_byte(unsigned char op, unsigned char op1, unsigned ch
   return 0;
 }
 
-unsigned instr_binary_word(unsigned op, unsigned op1, unsigned op2, unsigned long *eflags)
+unsigned instr_binary_word(unsigned op, unsigned op1, unsigned op2, ULONG *eflags)
 {
-  unsigned long flags;
+  ULONG flags;
   unsigned short opw1 = op1;
   unsigned short opw2 = op2;
 
@@ -99,9 +99,9 @@ unsigned instr_binary_word(unsigned op, unsigned op1, unsigned op2, unsigned lon
   return 0;
 }
 
-unsigned instr_binary_dword(unsigned op, unsigned op1, unsigned op2, unsigned long *eflags)
+unsigned instr_binary_dword(unsigned op, unsigned op1, unsigned op2, ULONG *eflags)
 {
-  unsigned long flags;
+  ULONG flags;
 
   switch (op&0x7){
   case 1: /* or */

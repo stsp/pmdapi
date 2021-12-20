@@ -13,83 +13,6 @@ typedef unsigned short us;
 typedef unsigned char u_char;
 typedef uint32_t dosaddr_t;
 
-#define DPMI_MAX_CLIENTS	32	/* maximal number of clients */
-#define PAGE_SIZE 4096
-#define PAGE_MASK	(~(PAGE_SIZE-1))
-/* to align the pointer to the (next) page boundary */
-#define PAGE_ALIGN(addr)	(((addr)+PAGE_SIZE-1)&PAGE_MASK)
-#define DPMI_page_size		4096	/* 4096 bytes per page */
-
-#define dpmi_sel() _my_cs()
-#define DPMI_SEL_OFF(x) (uintptr_t)entry_##x
-
-enum { es_INDEX, cs_INDEX, ss_INDEX, ds_INDEX, fs_INDEX, gs_INDEX,
-  eax_INDEX, ebx_INDEX, ecx_INDEX, edx_INDEX, esi_INDEX, edi_INDEX,
-  ebp_INDEX, esp_INDEX, eip_INDEX, eflags_INDEX };
-
-typedef __dpmi_paddr DPMI_INTDESC;
-struct pmaddr_s
-{
-    unsigned int	offset;
-    unsigned short	selector;
-};
-typedef struct dpmi_pm_block_stuct {
-  struct   dpmi_pm_block_stuct *next;
-  unsigned int handle;
-  unsigned int size;
-  dosaddr_t base;
-  u_short  *attrs;
-  int linear;
-} dpmi_pm_block;
-
-struct RealModeCallStructure {
-  __dpmi_regs;
-};
-
-#define RMREG(r) (rmreg->x.r)
-#define RMLWORD(r) (rmreg->x.r)
-#define E_RMREG(r) (rmreg->d.r)
-
-int ValidAndUsedSelector(unsigned short selector);
-
-extern int ConvertSegmentToDescriptor(unsigned short segment);
-
-dpmi_pm_block DPMImalloc(unsigned long size);
-int DPMIfree(unsigned long handle);
-dpmi_pm_block DPMIrealloc(unsigned long handle, unsigned long size);
-
-extern DPMI_INTDESC dpmi_get_interrupt_vector(unsigned char num);
-extern void dpmi_set_interrupt_vector(unsigned char num, DPMI_INTDESC desc);
-extern far_t DPMI_get_real_mode_interrupt_vector(int vec);
-void GetFreeMemoryInformation(unsigned int *lp);
-int GetDescriptor(us selector, unsigned int *lp);
-extern int DPMI_allocate_specific_ldt_descriptor(unsigned short selector);
-extern int SetDescriptor(unsigned short selector, unsigned int *lp);
-extern int SetSegmentBaseAddress(unsigned short selector,
-					unsigned long baseaddr);
-unsigned long GetSegmentLimit(unsigned short);
-extern unsigned int GetSegmentBase(unsigned short);
-extern unsigned short CreateAliasDescriptor(unsigned short selector);
-extern int SetDescriptorAccessRights(unsigned short selector,
-	unsigned short acc_rights);
-int dpmi_mhp_get_selector_size(int sel);
-extern int SetSegmentLimit(unsigned short, unsigned int);
-extern unsigned short AllocateDescriptors(int);
-extern int FreeDescriptor(unsigned short selector);
-extern void FreeSegRegs(struct sigcontext *scp, unsigned short selector);
-extern far_t allocate_realmode_callback(void (*handler)(
-	struct RealModeCallStructure *));
-extern int DPMI_free_realmode_callback(u_short seg, u_short off);
-extern int DPMI_get_save_restore_address(far_t *raddr, struct pmaddr_s *paddr);
-extern far_t DPMI_allocate_realmode_callback(u_short sel, int offs, u_short rm_sel,
-	int rm_offs);
-
-extern void copy_context(struct sigcontext *d,
-    struct sigcontext *s, int copy_fpu);
-
-void *SEL_ADR(unsigned short sel, unsigned int reg);
-void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
-
 #define pushw(base, ptr, val) \
 	do { \
 		ptr = (Bit16u)(ptr - 1); \
@@ -117,6 +40,7 @@ void *SEL_ADR_CLNT(unsigned short sel, unsigned int reg, int is_32);
 
 #define D_printf(...)
 #define g_printf(...)
+#define x_printf(...)
 #define error(...)
 #define dosemu_error(...)
 #define debug_level(...) 0
@@ -164,5 +88,9 @@ u_short dos_get_psp(void);
 #define ID_MASK		0x00200000
 
 void wrapper_init(void);
+
+#define coopth_leave()
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+void *dosaddr_to_unixaddr(dosaddr_t addr);
 
 #endif

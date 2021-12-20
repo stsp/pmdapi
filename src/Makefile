@@ -2,9 +2,9 @@ CC = i586-pc-msdosdjgpp-gcc
 LD = i586-pc-msdosdjgpp-gcc
 CFLAGS = -Wall -fms-extensions -fplan9-extensions
 CPPFLAGS = -I.
-CFILES = wrapper.c emm.c instremu.c msdoshlp.c startup.c handlers.c calls.c \
+CFILES = wrapper.c instremu.c msdoshlp.c startup.c handlers.c calls.c \
     msdos/msdos.c msdos/segreg.c msdos/msdos_ldt.c msdos/instr_dec.c \
-    msdos/callbacks.c
+    msdos/callbacks.c msdos/emm.c msdos/xms.c msdos/lio.c
 SFILES = entry.S
 OFILES = $(CFILES:.c=.o) $(SFILES:.S=.o)
 GFILES = asm-offsets.h asm-offsets.s

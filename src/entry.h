@@ -30,6 +30,11 @@ extern void MSDOS_rmcb_call2(struct sigcontext *scp);
 extern void entry_MSDOS_rmcb_call0(void);
 extern void entry_MSDOS_rmcb_call1(void);
 extern void entry_MSDOS_rmcb_call2(void);
+extern void entry_MSDOS_fault(void);
+extern void entry_MSDOS_pagefault(void);
+extern void entry_MSDOS_LDT_call16(void);
+extern void entry_MSDOS_LDT_call32(void);
+extern void entry_DPMI_msdos(void);
 
 void entry(unsigned short term, unsigned short handle, short prev);
 

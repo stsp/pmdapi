@@ -3,6 +3,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include <dos.h>
 
 typedef int                Boolean;
 typedef uint8_t            Bit8u;   /* type of 8 bit unsigned quantity */
@@ -35,14 +36,20 @@ union dword {
 
 #define _LO(reg) (*(unsigned char *)&(scp->e##reg))
 #define _HI(reg) (*((unsigned char *)&(scp->e##reg) + 1))
+#define _HI_(reg) (*((const unsigned char *)&(scp->e##reg) + 1))
+
+#define LO_WORD_(wrd, c)        (((c union dword *)&(wrd))->w.l)
+#define HI_WORD_(wrd, c)        (((c union dword *)&(wrd))->w.h)
 
 #define _LWORD(reg)	(*((unsigned short *)&(scp->reg)))
+#define _LWORD_(reg)    LO_WORD_(_##reg, const)
 #define _HWORD(reg)	(*((unsigned short *)&(scp->reg) + 1))
 
 #define LO_WORD(wrd)	(((union dword *)&(wrd))->w.l)
 #define HI_WORD(wrd)    (((union dword *)&(wrd))->w.h)
 
 #define LO_BYTE(wrd)	(((union dword *)&(wrd))->b.l)
+#define LO_BYTE_(wrd, c) (((c union dword *)&(wrd))->b.l)
 #define HI_BYTE(wrd)    (((union dword *)&(wrd))->b.h)
 
 #define _gs     (scp->gs)
@@ -65,6 +72,46 @@ union dword {
 #define _ss     (scp->ss)
 #define _cr2	(scp->cr2)
 
+#define _gs_    (scp->gs)
+#define _fs_    (scp->fs)
+#define _es_    (scp->es)
+#define _ds_    (scp->ds)
+#define _edi_   (scp->edi)
+#define _esi_   (scp->esi)
+#define _ebp_   (scp->ebp)
+#define _esp_   (scp->esp)
+#define _ebx_   (scp->ebx)
+#define _edx_   (scp->edx)
+#define _ecx_   (scp->ecx)
+#define _eax_   (scp->eax)
+#define _err_   (scp->err)
+#define _trapno_ (scp->trapno)
+#define _eip_   (scp->eip)
+#define _cs_    (scp->cs)
+#define _eflags_ (scp->eflags)
+#define _ss_    (scp->ss)
+#define _cr2_   (scp->cr2)
+
+#define get_gs(s)     ((s)->gs)
+#define get_fs(s)     ((s)->fs)
+#define get_es(s)     ((s)->es)
+#define get_ds(s)     ((s)->ds)
+#define get_edi(s)    ((s)->edi)
+#define get_esi(s)    ((s)->esi)
+#define get_ebp(s)    ((s)->ebp)
+#define get_esp(s)    ((s)->esp)
+#define get_ebx(s)    ((s)->ebx)
+#define get_edx(s)    ((s)->edx)
+#define get_ecx(s)    ((s)->ecx)
+#define get_eax(s)    ((s)->eax)
+#define get_err(s)    ((s)->err)
+#define get_trapno(s) ((s)->trapno)
+#define get_eip(s)    ((s)->eip)
+#define get_cs(s)     ((s)->cs)
+#define get_eflags(s) ((s)->eflags)
+#define get_ss(s)     ((s)->ss)
+#define get_cr2(s)    ((s)->cr2)
+
 /* flags */
 #define CF  (1 <<  0)
 #define PF  (1 <<  2)
@@ -83,13 +130,25 @@ union dword {
 #define VIP VIP_MASK
 #define ID  ID_MASK
 
+#define set_IF() enable()
+#define clear_IF() disable()
+
 #define get_FLAGS(flags) ({ \
   int __flgs = flags; \
   (((__flgs & VIF) ? __flgs | IF : __flgs & ~IF)); \
 })
+#define get_EFLAGS(flags) ({ \
+  int __flgs = (flags); \
+  (((__flgs & IF) ? __flgs | VIF : __flgs & ~VIF) | IF | IOPL_MASK); \
+})
+#define set_EFLAGS(flgs, new_flgs) ({ \
+  uint32_t __nflgs = (new_flgs); \
+  (flgs)=(__nflgs) | IF | IOPL_MASK | ((__nflgs & IF) ? VIF : 0); \
+  ((__nflgs & IF) ? set_IF() : clear_IF()); \
+})
 
 #define MK_FARt(seg, off) ((far_t){(off), (seg)})
-#define SEG2LINEAR(seg)	((void *)  ( ((unsigned int)(seg)) << 4)  )
+#define SEG2UNIX(seg)	((void *)  ( ((unsigned int)(seg)) << 4)  )
 #define SEGOFF2LINEAR(seg, off)  ((((Bit32u)(seg)) << 4) + (off))
 
 #define MEMCPY_DOS2DOS(dos_addr1, dos_addr2, n) \
@@ -123,6 +182,10 @@ typedef struct {
   u_short offset;
   u_short segment;
 } far_t;
+
+#define MK_FP16(s,o)            ((((unsigned int)(s)) << 16) | ((o) & 0xffff))
+#define FP_OFF16(far_ptr)       ((far_ptr) & 0xffff)
+#define FP_SEG16(far_ptr)       (((far_ptr) >> 16) & 0xffff)
 
 #include "wrapper.h"
 
