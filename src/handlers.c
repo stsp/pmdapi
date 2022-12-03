@@ -17,6 +17,7 @@ struct clnt {
     unsigned short fs;
     unsigned short gs;
     __dpmi_paddr old_int21;
+    int used;
 };
 static struct clnt sr[MAX_CLIENTS];
 
@@ -112,6 +113,7 @@ static void done(unsigned short handle, short prev)
   if (have_gs)
     __dpmi_free_ldt_descriptor(sr[handle].gs);
 
+  sr[current_client].used = 0;
   if (prev != -1) {
     load_fs_gs(prev);
     dseg32 = sr[prev].ds;
@@ -121,19 +123,18 @@ static void done(unsigned short handle, short prev)
   thunk_on(0);
 }
 
-void entry(unsigned short term, unsigned short handle, short prev)
+void entry(unsigned short term, unsigned short handle, short inh_or_prev)
 {
-  __dpmi_paddr addr;
   int err;
-
-  if (term)
-    return done(handle, prev);
 
   err = thunk_on(1);
   if (err)
     printf("THUNK_16_32x not supported\n");
   /* can print only after thunk enabled */
-  emu_printf("entry %i %i %i\n", term, handle, prev);
+  emu_printf("entry %i %i %i\n", term, handle, inh_or_prev);
+
+  if (term)
+    return done(handle, inh_or_prev);
 
   if (have_fs) {
     if ((sr[handle].fs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
@@ -155,22 +156,28 @@ void entry(unsigned short term, unsigned short handle, short prev)
   sr[handle].ds = _my_ds();
   dseg32 = sr[handle].ds;
   current_client = handle;
+  sr[current_client].used = 1;
 
-  addr.selector = _my_cs();
-  if (clnt_is_32)
-    addr.offset32 = (unsigned long)dos32_int21;
-  else
-    addr.offset32 = (unsigned long)dos16_int21;
-  if (__dpmi_get_protected_mode_interrupt_vector(0x21,
-      &sr[current_client].old_int21) == -1) {
-    return;
-  }
-  emu_printf("old %x:%lx new %x:%lx\n",
+  if (inh_or_prev && current_client > 0 && sr[current_client - 1].used)
+    sr[current_client].old_int21 = sr[current_client - 1].old_int21;
+  else {
+    __dpmi_paddr addr;
+
+    addr.selector = _my_cs();
+    if (clnt_is_32)
+      addr.offset32 = (unsigned long)dos32_int21;
+    else
+      addr.offset32 = (unsigned long)dos16_int21;
+
+    if (__dpmi_get_protected_mode_interrupt_vector(0x21,
+        &sr[current_client].old_int21) == -1)
+      return;
+    emu_printf("old %x:%lx new %x:%lx\n",
       sr[current_client].old_int21.selector,
       sr[current_client].old_int21.offset32,
       addr.selector, addr.offset32);
-  emu_printf("my_ds: 0x%x my_cs: 0x%x\n", _my_ds(), _my_cs());
-  if (__dpmi_set_protected_mode_interrupt_vector(0x21, &addr) == -1) {
-    return;
+    emu_printf("my_ds: 0x%x my_cs: 0x%x\n", _my_ds(), _my_cs());
+    if (__dpmi_set_protected_mode_interrupt_vector(0x21, &addr) == -1)
+      return;
   }
 }
