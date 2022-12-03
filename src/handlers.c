@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdarg.h>
+#include <assert.h>
 #include <dpmi.h>
 #include <sys/segments.h>
 #include "sigcontext.h"
@@ -103,15 +104,15 @@ void int21_handler(struct sigcontext *scp)
   }
 }
 
-static void done(unsigned short handle, short prev)
+static void done(short prev)
 {
-  load_fs_gs(handle);
+  load_fs_gs(current_client);
   __dpmi_set_protected_mode_interrupt_vector(0x21,
       &sr[current_client].old_int21);
   if (have_fs)
-    __dpmi_free_ldt_descriptor(sr[handle].fs);
+    __dpmi_free_ldt_descriptor(sr[current_client].fs);
   if (have_gs)
-    __dpmi_free_ldt_descriptor(sr[handle].gs);
+    __dpmi_free_ldt_descriptor(sr[current_client].gs);
 
   sr[current_client].used = 0;
   if (prev != -1) {
@@ -127,6 +128,7 @@ void entry(unsigned short term, unsigned short handle, short inh_or_prev)
 {
   int err;
 
+  assert(handle < MAX_CLIENTS && (handle == current_client || term != 1));
   err = thunk_on(1);
   if (err)
     printf("THUNK_16_32x not supported\n");
@@ -134,7 +136,7 @@ void entry(unsigned short term, unsigned short handle, short inh_or_prev)
   emu_printf("entry %i %i %i\n", term, handle, inh_or_prev);
 
   if (term)
-    return done(handle, inh_or_prev);
+    return done(inh_or_prev);
 
   if (have_fs) {
     if ((sr[handle].fs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
