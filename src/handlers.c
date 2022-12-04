@@ -135,8 +135,13 @@ void entry(unsigned short term, unsigned short handle, short inh_or_prev)
   /* can print only after thunk enabled */
   emu_printf("entry %i %i %i\n", term, handle, inh_or_prev);
 
-  if (term)
+  if (term == 1)
     return done(inh_or_prev);
+  if (term == 2) {
+    thunk_on(0);
+    current_client = handle;
+    return;
+  }
 
   if (have_fs) {
     if ((sr[handle].fs = __dpmi_allocate_ldt_descriptors(1)) == -1) {
