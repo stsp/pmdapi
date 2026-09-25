@@ -1,127 +1,43 @@
+/*
+ * pmdapi as a TSR: set up the msdos plugin, have the DPMI host call it
+ * for every new client (the resident service provider of DPMI 1.0), and
+ * stay resident.
+ */
 #include <stdio.h>
-#include <sys/segments.h>
+#include <stdlib.h>
 #include <dpmi.h>
-#include "desc.h"
-#include "ldt.h"
+#include <sys/segments.h>
+#include "emudpmi.h"
 #include "entry.h"
-#include "emmwrp.h"
-#include "wrapper.h"
-#include "handlers.h"
-#include "startup.h"
+#include "msdoshlp.h"
+#include "pmdapi.h"
 
-int have_fs = 0, have_gs = 0;
-unsigned char fs_desc[8], gs_desc[8];
-
-int main()
+int main(void)
 {
-  __dpmi_callback_info info = {};
-  __dpmi_paddr extapi;
-  unsigned long desc[2];
-  short cs16, cs32, ds16, ds32;
-  unsigned long cs_base, ds_base;
+    ULONG ds_base;
+    unsigned short ds = _my_ds(), cs = _my_cs();
 
-  emm_init();
-  wrapper_init();
-
-  cs32 = _my_cs();
-  ds32 = _my_ds();
-  if (__dpmi_get_segment_base_address(cs32, &cs_base) == -1) {
-    printf("base_addr failed\n");
-    return 1;
-  }
-  if (__dpmi_get_segment_base_address(ds32, &ds_base) == -1) {
-    printf("base_addr failed\n");
-    return 1;
-  }
-  printf("cs=%#hx ds=%#hx cs_base=%#lx ds_base=%#lx\n", cs32, ds32, cs_base, ds_base);
-
-  if (__dpmi_get_vendor_specific_api_entry_point("THUNK_16_32", &extapi)) {
-    printf("THUNK_16_32 not supported\n");
-    cs16 = 0;
-  } else {
-    modify_ldt_t ldt;
-
-    ldt.seg_32bit = 0;
-    ldt.read_exec_only = 0;
-    ldt.limit_in_pages = 0;
-    ldt.seg_not_present = 0;
-
-    if ((cs16 = __dpmi_allocate_ldt_descriptors(1)) == -1) {
-      printf("alloc_desc failed\n");
-      return 1;
+    /* dosemu2's plugin reaches all of DOS memory through near pointers */
+    if (__dpmi_get_segment_base_address(ds, &ds_base) == -1 ||
+	    __dpmi_set_segment_limit(ds, 0xffffffff) == -1 ||
+	    __dpmi_set_segment_limit(cs, 0xffffffff) == -1) {
+	printf("pmdapi: cannot map the address space\n");
+	return 1;
     }
-    ldt.entry_number = cs16 >> 3;
-    ldt.base_addr = cs_base + (unsigned long)code16;
-    ldt.limit = (unsigned long)code16_end - (unsigned long)code16;
-    ldt.contents = MODIFY_LDT_CONTENTS_CODE;
-    desc[0] = LDT_entry_a(&ldt);
-    desc[1] = LDT_entry_b(&ldt);
-    if (__dpmi_set_descriptor(cs16, desc) == -1) {
-      printf("set_desc failed\n");
-      return 1;
+    mem_base = (unsigned char *)-ds_base;
+    dseg32 = ds;
+    cur_sp = (uintptr_t)pmdapi_stack + STK_CHUNK * STK_DEPTH;
+
+    wrapper_init();
+    msdos_plugin_init();
+    /* installs the resident service provider, see rsp_init() */
+    msdos_reset();
+
+    printf("pmdapi: installed\n");
+    fflush(stdout);
+    if (__dpmi_terminate_and_stay_resident(0, 0) == -1) {
+	printf("pmdapi: the DPMI host cannot keep us resident\n");
+	return 1;
     }
-    memcpy(info.code16, desc, sizeof(desc));
-
-    if ((ds16 = __dpmi_allocate_ldt_descriptors(1)) == -1) {
-      printf("alloc_desc failed\n");
-      return 1;
-    }
-    ldt.entry_number = ds16 >> 3;
-    ldt.base_addr = ds_base + (unsigned long)data16;
-    ldt.limit = (unsigned long)data16_end - (unsigned long)data16;
-    ldt.contents = MODIFY_LDT_CONTENTS_DATA;
-    desc[0] = LDT_entry_a(&ldt);
-    desc[1] = LDT_entry_b(&ldt);
-    if (__dpmi_set_descriptor(ds16, desc) == -1) {
-      printf("set_desc failed\n");
-      return 1;
-    }
-    memcpy(info.data16, desc, sizeof(desc));
-
-    info.ip = (unsigned long)entry16 - (unsigned long)code16;
-    asm volatile("lcalll *%0\n" :: "m"(extapi), "a"(1));
-  }
-
-  if (__dpmi_get_descriptor(cs32, cs32_desc) == -1) {
-    printf("get_desc failed\n");
-    return 1;
-  }
-  if (__dpmi_get_descriptor(ds32, ds32_desc) == -1) {
-    printf("get_desc failed\n");
-    return 1;
-  }
-
-  if ((have_fs = _my_fs())) {
-    if (__dpmi_get_descriptor(have_fs, fs_desc) == -1) {
-      printf("get_desc failed\n");
-      return 1;
-    }
-  }
-  if ((have_gs = _my_gs())) {
-    if (__dpmi_get_descriptor(have_gs, gs_desc) == -1) {
-      printf("get_desc failed\n");
-      return 1;
-    }
-  }
-
-  if (__dpmi_get_descriptor(cs32, info.code32) == -1) {
-    printf("get_desc failed\n");
-    return 1;
-  }
-  if (__dpmi_get_descriptor(ds32, info.data32) == -1) {
-    printf("get_desc failed\n");
-    return 1;
-  }
-  info.eip = (unsigned long)entry32;
-  emu_printf("eip %lx\n", info.eip);
-
-  if (__dpmi_install_resident_service_provider_callback(&info) == -1) {
-    printf("inst_res failed\n");
-    return 1;
-  }
-  if (__dpmi_terminate_and_stay_resident(0, 0) == -1) {
-    printf("tsr failed\n");
-    return 1;
-  }
-  return 0;
+    return 0;
 }

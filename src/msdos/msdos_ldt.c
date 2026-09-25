@@ -21,8 +21,10 @@
  */
 
 #include <string.h>
+#include <alloca.h>
 #include <assert.h>
 #include "cpu.h"
+#include "utilities.h"
 #include "memory.h"
 #include "emudpmi.h"
 #include "instr_dec.h"
@@ -35,7 +37,8 @@
 #define LDT_UPDATE_LIM 1
 
 static unsigned char *ldt_backbuf;
-static unsigned char *ldt_alias;
+static dosaddr_t ldt_bb;
+static dosaddr_t ldt_alias;
 static uint32_t ldt_h;
 static uint32_t ldt_alias_h;
 static unsigned short dpmi_ldt_alias;
@@ -52,55 +55,64 @@ static unsigned short d16, d32;
 
 static void msdos_ldt_update(int selector, int num);
 
-static void msdos_ldt_handler(sigcontext_t *scp, void *arg)
+static void msdos_ldt_handler(cpuctx_t *scp, void *arg)
 {
     msdos_ldt_update(_LWORD(ebx), _LWORD(ecx));
 }
 
-unsigned short msdos_ldt_init(void)
+unsigned short msdos_ldt_init(int page_size)
 {
-    unsigned lim;
+    char tmpnm[] = "ldt_alias_%PXXXXXX";
+    unsigned lim_p_1;  // limit+1
     struct pmaddr_s pma;
     DPMI_INTDESC desc;
     struct SHM_desc shm;
     unsigned short name_sel;
     unsigned short alias_sel;
     dosaddr_t name;
-    uint16_t attrs[PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE) / PAGE_SIZE];
+    uint16_t *attrs;
     int err;
     int i;
-    int npages = PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE) / PAGE_SIZE;
+    int npages;
     const int name_len = 128;
 
+    attrs = alloca(sizeof(*attrs) * PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE) / page_size);
+    npages = PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE) / page_size;
     name_sel = AllocateDescriptors(1);
     name = msdos_malloc(name_len);
-    strcpy((char *)MEM_BASE32(name), "ldt_alias");
+    tempname(tmpnm, 6);
+    MEMCPY_2DOS(name, tmpnm, strlen(tmpnm) + 1);
     SetSegmentBaseAddress(name_sel, name);
     SetSegmentLimit(name_sel, name_len - 1);
     shm.name_selector = name_sel;
     shm.name_offset32 = 0;
     shm.req_len = PAGE_ALIGN(LDT_ENTRIES*LDT_ENTRY_SIZE);
-    shm.flags = SHM_NOEXEC;
+    shm.flags = SHM_NOEXEC | SHM_EXCL;
     err = DPMIAllocateShared(&shm);
     assert(!err);
     ldt_h = shm.handle;
-    ldt_backbuf = MEM_BASE32(shm.addr);
+    ldt_bb = shm.addr;
+    ldt_backbuf = LINEAR2UNIX(ldt_bb);
+
+    shm.flags = SHM_NOEXEC;
     err = DPMIAllocateShared(&shm);
     assert(!err);
     ldt_alias_h = shm.handle;
     if (ldt_h == ldt_alias_h)
 	error("DPMI: problems allocating shm\n");
-    ldt_alias = MEM_BASE32(shm.addr);
+    ldt_alias = shm.addr;
     msdos_free(name);
     FreeDescriptor(name_sel);
     for (i = 0; i < npages; i++)
 	attrs[i] = 0x83;	// NX, RO
-    DPMISetPageAttributes(shm.handle, 0, attrs, npages);
+    DPMISetPageAttributes(ldt_alias_h, 0, attrs, npages);
+    DPMIfree(ldt_alias_h);
+    DPMIfree(ldt_h);
 
     alias_sel = AllocateDescriptors(1);
     assert(alias_sel);
-    lim = ((alias_sel >> 3) + 1) * LDT_ENTRY_SIZE;
-    SetSegmentLimit(alias_sel, PAGE_ALIGN(lim) + XTRA_LDT_LIM - 1);
+    lim_p_1 = ((alias_sel >> 3) + 1) * LDT_ENTRY_SIZE;
+    SetSegmentLimit(alias_sel, PAGE_ALIGN(lim_p_1) + XTRA_LDT_LIM - 1);
     SetSegmentBaseAddress(alias_sel, shm.addr);
     /* pre-fill back-buffer */
     for (i = 0x10; i <= (alias_sel >> 3); i++)
@@ -141,11 +153,11 @@ void msdos_ldt_done(void)
     FreeDescriptor(d16);
     FreeDescriptor(d32);
     ldt_backbuf = NULL;
-    DPMIFreeShared(ldt_alias_h);
-    DPMIFreeShared(ldt_h);
+    DPMIUnmapHWRam(ldt_alias);
+    DPMIUnmapHWRam(ldt_bb);
 }
 
-int msdos_ldt_fault(sigcontext_t *scp, uint16_t sel)
+int msdos_ldt_fault(cpuctx_t *scp, uint16_t sel)
 {
     unsigned limit;
 #if LDT_UPDATE_LIM
@@ -193,13 +205,14 @@ static void msdos_ldt_update(int selector, int num)
         memset(&ldt_backbuf[(selector & 0xfff8) + (i << 3)], 0,
             LDT_ENTRY_SIZE);
         ldt_backbuf[(selector & 0xfff8) + (i << 3) + 5] = 0x70;
-        D_printf("DPMI: sel %x freed\n", (selector & 0xfff8) + (i << 3) + 7);
+        if (debug_level('D') >= 5)
+          D_printf("DPMI: sel %x freed\n", (selector & 0xfff8) + (i << 3) + 7);
       }
     }
   }
 }
 
-static void direct_ldt_write(sigcontext_t *scp, int offset,
+static void direct_ldt_write(cpuctx_t *scp, int offset,
     char *buffer, int length)
 {
   int ldt_entry = offset / LDT_ENTRY_SIZE;
@@ -236,8 +249,21 @@ static void direct_ldt_write(sigcontext_t *scp, int offset,
   if (!(lp[5] & 0x80)) {
     D_printf("LDT: NP\n");
     memcpy(lp, &ldt_backbuf[ldt_entry * LDT_ENTRY_SIZE], LDT_ENTRY_SIZE);
-    if (lp[5] & 0x80)
+    /* A present entry with S=0 is not a descriptor the host LDT can hold,
+     * so the branch below stores it as not-present and keeps the client's
+     * bytes here. That is the arrangement working as intended, not a cache
+     * that drifted: a 286|DOS-Extender free list is made of such entries
+     * and would otherwise shout on every write to one. */
+    if ((lp[5] & 0x90) == 0x90)
       error("DPMI: ldt cache out of sync\n");
+  } else if ((lp[5] & 0x90) == 0x90) {
+    /* Here the bytes the client did not write come from the host LDT,
+     * which does not carry the accessed bit: SetSelector() has nowhere to
+     * put it. A 286|DOS-Extender client compares the whole access byte
+     * against 0xf3, so take that bit back from the backbuffer, which is
+     * its own view of the table. The branch above needs none of this: it
+     * has just taken the whole entry from there. */
+    lp[5] |= ldt_backbuf[ldt_entry * LDT_ENTRY_SIZE + 5] & 1;
   }
   memcpy(lp + ldt_offs, buffer, length);
   D_printf("LDT: ");
@@ -252,20 +278,30 @@ static void direct_ldt_write(sigcontext_t *scp, int offset,
     memset(lp1, 0, sizeof(lp1));
     lp1[5] = 0x70;
     SetDescriptor(selector, (unsigned int *)lp1);
-    FreeSegRegs(scp, selector);
+    /* A present entry with S=0 is a client marking a slot it owns, not a
+     * descriptor going away: a 286|DOS-Extender keeps its free list in
+     * such entries, 6731 writes of access byte 0x80 in one run of one
+     * game. Real hardware leaves a loaded segment register alone when the
+     * descriptor behind it is rewritten, and the client goes on using the
+     * selector, so only clear the registers when the entry really is
+     * gone. */
+    if (!(lp[5] & 0x80))
+      FreeSegRegs(scp, selector);
   }
   memcpy(&ldt_backbuf[ldt_entry * LDT_ENTRY_SIZE], lp, LDT_ENTRY_SIZE);
 out:
   dpmi_ext_ldt_monitor_enable(1);
 }
 
-int msdos_ldt_access(unsigned char *cr2)
+int _msdos_ldt_access(dosaddr_t cr2)
 {
+    if (!ldt_alias)
+        return 0;
     return cr2 >= ldt_alias && cr2 < ldt_alias + LDT_ENTRIES * LDT_ENTRY_SIZE;
 }
 
-void msdos_ldt_write(sigcontext_t *scp, uint32_t op, int len,
-    unsigned char *cr2)
+void _msdos_ldt_write(cpuctx_t *scp, uint32_t op, int len,
+    dosaddr_t cr2)
 {
     if (!len) {
 	/* 0-len shouldn't fault, so can't be here */
@@ -275,11 +311,11 @@ void msdos_ldt_write(sigcontext_t *scp, uint32_t op, int len,
     direct_ldt_write(scp, cr2 - ldt_alias, (char *)&op, len);
 }
 
-int msdos_ldt_pagefault(sigcontext_t *scp)
+int _msdos_ldt_pagefault(cpuctx_t *scp)
 {
     uint32_t op;
     int len;
-    unsigned char *cr2 = MEM_BASE32(_cr2);
+    dosaddr_t cr2 = _cr2;
 
     if (!msdos_ldt_access(cr2))
 	return 0;

@@ -1,280 +1,261 @@
-#include "asm-offsets.h"
-
-#define stack_size 0x4000
-
-#define S_REG(breg, reg) %ss:SIGCONTEXT_##reg(%breg)
-#define MOV_TO_REG(breg, src, dreg) movl S_REG(breg, src), %dreg
-#define LOAD_REG(breg, reg) MOV_TO_REG(breg, reg, reg)
-#define MOV_FROM_REG(breg, sreg, dst) movl %sreg, S_REG(breg, dst)
-#define SAVE_REG(breg, reg) MOV_FROM_REG(breg, reg, reg)
-
-do_int:
-      subl   $12,%esp			/* dummy, cr2,oldmask,fpstate */
-      pushl  %cs:tmp_ss
-      pushl  %cs:tmp_esp		/* esp_at_signal */
-      pushl  %cs:tmp_flags
-      pushl  8(%ebp)			/* cs */
-      pushl  4(%ebp)			/* eip */
-      pushl  $0				/* dummy, err */
-      pushl  $0				/* dummy, trapno */
-      pusha
-      pushl  (%ebp)
-      popl   8(%esp)			/* ebp */
-      movl   %ebp, %ss:tmp_ebp
-      pushl  %ds
-      pushl  %es
-      pushl  %fs
-      pushl  %gs
-      movl   %cs:_dseg32, %eax
-      movl   %eax, %ds
-      movl   %eax, %es
-      pushl  %esp
-      call   *-4(%ebp)
-      addl   $4, %esp
-      MOV_TO_REG(esp, eflags, eax)
-      movl   %eax, tmp_flags
-      popl   %gs
-      popl   %fs
-      popl   %es
-      popl   %ds
-      pushl  8(%esp)
-      popl   (%ebp)
-      popa
-      movl   %cs:tmp_ebp, %ebp
-      addl   $2*4, %esp
-      popl   4(%ebp)
-      popl   8(%ebp)
-      addl   $24, %esp
-      ret
-
-.macro _scp_call cname ir
-.globl _entry_\cname
-_entry_\cname:
-    enter $4, $0
-    movl $_\cname, -4(%ebp)
-    call do_int
-    leave
-    \ir
-.endm
-.macro scp_call cname
-    _scp_call \cname lret
-.endm
-.macro scp_call_i cname
-    _scp_call \cname iret
-.endm
-
-scp_call MSDOS_API_call
-scp_call MSDOS_API_WINOS2_call
-scp_call MSDOS_XMS_call
-scp_call_i MSDOS_rmcb_call0
-scp_call_i MSDOS_rmcb_call1
-scp_call_i MSDOS_rmcb_call2
-
-dos_int21:
-    enter $4, $0
-    movl $_int21_handler, -4(%ebp)
-    call do_int
-    leave
-    ret
-
-.globl _dos32_int21
-_dos32_int21:
-    pushl %esi
-    pushl %edi
-    pushl %ds
-    movl %cs:_dseg32, %edi
-    movl %edi, %ds
-    mov  %ss, tmp_ss
-    pushfl
-    popl tmp_flags
-    movl %esp, tmp_esp
-    addl $12, tmp_esp
-    popl %ds
-    movl %ss, %esi
-    cmpw %si, %cs:_dseg32
-    je 1f
-    pushl %edi
-    pushl $(stack+stack_size)
-    movl %esp, %edi
-    lss %ss:(%edi), %esp
-    pushl %esi
-    pushl %edi
-    pushl %ds
-    movl %esi, %ds
-    movl 12(%edi), %esi
-    movl 8(%edi), %edi
-    popl %ds
-    call dos_int21
-    lss (%esp), %esp
-    addl $16, %esp
-    jmp 2f
-1:
-    popl %edi
-    popl %esi
-    call dos_int21
-2:
-    pushl %cs:tmp_flags
-    popfl
-    lret $4
-
-.globl _dos16_int21
-_dos16_int21:
-    pushl %esi
-    pushl %edi
-    pushl %ds
-    movl %cs:_dseg32, %edi
-    movl %edi, %ds
-    mov  %ss, tmp_ss
-    pushfl
-    popl tmp_flags
-    movl %esp, tmp_esp
-    addl $12, tmp_esp
-    popl %ds
-    movl %ss, %esi
-    cmpw %si, %di
-    jne 1f
-    popl %edi
-    popl %esi
-    jmp _dos32_int21
-1:
-    pushl %edi
-    pushl $(stack+stack_size)
-    movzwl %sp, %edi
-    lss %ss:(%edi), %esp
-    pushl %esi
-    pushl %edi
-    pushl %ds
-    movl %esi, %ds
-    movl 12(%edi), %esi
-    movl 8(%edi), %edi
-    popl %ds
-    call dos_int21
-    lss (%esp), %esp
-    addl $16, %esp
-    pushl %cs:tmp_flags
-    popfl
-    lretw $2
-
-.globl _entry32
-_entry32:
-    movl $1, _clnt_is_32
-common_entry:
-    movl %esp, lss_esp
-    mov  %ss, lss_ss
-    movl %ds, %esi
-    movl %esi, %es
-    movl %esi, lss_ss1
-    movl $(stack+stack_size), lss_esp1
-    lss lss_esp1, %esp
-    pushl %ecx
-    pushl %ebx
-    pushl %eax
-    call _entry
-    lss lss_esp, %esp
-    lret
-
-.code16
-.globl _code16
-_code16:
-.globl _entry16
-_entry16:
-    pushw %ds
-    popw %es
-    movl $0, _clnt_is_32-_data16
-    pushw %ax
-    pushw %bx
-    pushw %cx
-    orw %ax, %ax
-    jnz 3f
-    movw $0, %ax
-    movw $2, %cx
-    int $0x31
-    jc 1f
-    movw %ax, %bx
-    movw $3, %ax
-    int $0x31
-    movw %ax, %cx
-    movw $0xc, %ax
-    movw $(_ds32_desc-_data16), %di
-    int $0x31
-    jc 1f
-    movw %bx, %si
-    addw %cx, %bx
-    movw $(_cs32_desc-_data16), %di
-    int $0x31
-    jc 1f
-    movw %bx, cseg32_16-_data16
-    movw %si, %ds
-4:
-    popw %cx
-    popw %si
-    popw %ax
-    pushw $0
-    pushw %bx
-    pushw $0
-    movw %si, %bx
-    pushw $common_entry
-    movzwl %sp, %esi
-    lcalll *%ss:(%esi)
-    addw $8, %sp
-2:
-    lret
-1:
-    popw %cx
-    popw %bx
-    popw %ax
-    jmp 2b
-3:
-    movw cseg32_16-_data16, %bx
-    movw _dseg32-_data16, %di
-    movw %di, %ds
-    jmp 4b
-.globl _code16_end
-_code16_end:
-.code32
-
-.data
-
-.globl _data16
-_data16:
-.globl _cs32_desc
-_cs32_desc:
-.long 0,0
-.globl _ds32_desc
-_ds32_desc:
-.long 0,0
-.globl _clnt_is_32
-_clnt_is_32:
-.long 1
-.globl _dseg32
-_dseg32:
-.long 0
-cseg32_16:
-.long 0
-.globl _data16_end
-_data16_end:
-
-tmp_flags:
-.long 0
-tmp_esp:
-.long 0
-tmp_ss:
-.long 0
-tmp_ebp:
-.long 0
-lss_esp:
-.long 0
-lss_ss:
-.long 0
-lss_esp1:
-.long 0
-lss_ss1:
-.long 0
-ret_adr:
-.long 0
-stack:
-.rept stack_size
-.byte 0
-.endr
+/*
+ * Ways into pmdapi from its clients.
+ *
+ * This file must be linked first, right after crt0: the offsets of the
+ * stubs go into 16-bit interrupt vectors and far pointers of 16-bit
+ * clients, so they have to stay below 64K.
+ */
+#include "asm.h"
 
 .text
+	.p2align 4
+.globl stubs
+stubs:
+	.set i, 0
+	.rept STUB_NUM
+	.p2align 4
+	pushl $i
+	jmp common
+	.set i, i+1
+	.endr
+	.p2align 4
+/* the DPMI host calls a resident service provider with ds already ours */
+.globl rsp_stub16
+rsp_stub16:
+	pushl $-1
+	jmp common_rsp
+.globl rsp_stub32
+rsp_stub32:
+	pushl $-2
+	jmp common_rsp
+
+/*
+ * int 31h of the clients, for their exception handlers. Ours go straight
+ * to the host: we make DPMI calls all the time, from our own code. Only
+ * 32-bit clients are served, so the frame is a 32-bit one.
+ */
+.globl int31_entry
+int31_entry:
+	pushl %eax
+	movw %cs, %ax
+	cmpw %ax, 8(%esp)
+	popl %eax
+	je 1f
+	jmp stubs + ID_INT31_STUB * STUB_SIZE
+1:
+	ljmpl *%cs:int31_prev
+
+common:
+	pushfl
+	pushl %es
+	pushl %ds
+	pushl %eax
+	pushl %ecx
+	movl %cs:dseg32, %eax
+	jmp have_ds
+common_rsp:
+	pushfl
+	pushl %es
+	pushl %ds
+	pushl %eax
+	pushl %ecx
+	movl %ds, %eax
+have_ds:
+	movw %ax, %ds
+	/* take a piece of our stack before using it, so that anything
+	 * nesting in from here on goes below it */
+	movl cur_sp, %ecx
+	subl $STK_CHUNK, cur_sp
+	movl %esp, EF_esp-EF_size(%ecx)
+	movl $0, EF_ss-EF_size(%ecx)
+	movw %ss, EF_ss-EF_size(%ecx)
+	leal -EF_size(%ecx), %ecx
+	movw %ax, %ss
+	movl %ecx, %esp
+	/* now copy what we pushed on the client's stack */
+	movw EF_ss(%esp), %ax
+	movw %ax, %es
+	movl EF_esp(%esp), %ecx
+	larl %eax, %eax
+	testl $0x400000, %eax
+	jnz 1f
+	movzwl %cx, %ecx
+1:
+	movl %es:(%ecx), %eax
+	movl %eax, PM_ecx(%esp)
+	movl %es:4(%ecx), %eax
+	movl %eax, PM_eax(%esp)
+	movl %es:8(%ecx), %eax
+	movw %ax, PM_ds(%esp)
+	movl %es:12(%ecx), %eax
+	movw %ax, PM_es(%esp)
+	movl %es:16(%ecx), %eax
+	movl %eax, PM_eflags(%esp)
+	movl %es:20(%ecx), %eax
+	movl %eax, EF_id(%esp)
+	movl %ebx, PM_ebx(%esp)
+	movl %edx, PM_edx(%esp)
+	movl %esi, PM_esi(%esp)
+	movl %edi, PM_edi(%esp)
+	movl %ebp, PM_ebp(%esp)
+	movw %fs, PM_fs(%esp)
+	movw %gs, PM_gs(%esp)
+	movl %ds, %eax
+	movw %ax, %es
+	cld
+	movl %esp, %eax
+	pushl %eax
+	call pmdapi_entry
+	addl $4, %esp
+	/* pmdapi_entry() has put ebx, ds, eip, cs and eflags on the
+	 * client's stack, and its esp points at them */
+	movl %esp, %ebx
+	movl PM_eax(%ebx), %eax
+	movl PM_ecx(%ebx), %ecx
+	movl PM_edx(%ebx), %edx
+	movl PM_esi(%ebx), %esi
+	movl PM_edi(%ebx), %edi
+	movl PM_ebp(%ebx), %ebp
+	movw PM_es(%ebx), %es
+	movw PM_fs(%ebx), %fs
+	movw PM_gs(%ebx), %gs
+	lss PM_esp(%ebx), %esp
+	addl $STK_CHUNK, cur_sp
+	popl %ebx
+	popl %ds
+	iretl
+
+/* a 16-bit stack switch for the real mode helpers is not needed:
+ * those are copied to DOS memory, see rmstubs below */
+
+/* Real mode helpers, copied to DOS memory at startup.
+ * The data fields are filled from C, see msdoshlp.c. */
+	.code16
+.globl rm_stubs
+rm_stubs:
+.globl rm_s_r
+rm_s_r:
+	.word 0, 0
+.globl rm_s_r_len
+rm_s_r_len:
+	.word 0
+/* msdos exec helper: entered with an iret frame, does int 21h/4bh
+ * between saving and restoring the DPMI host's state */
+.globl rm_exec
+rm_exec:
+	pushw %bp
+	movw %sp, %bp
+	subw %cs:rm_s_r_len-rm_stubs, %sp
+	pushw %ax
+	pushw %es
+	pushw %di
+	movb $0, %al
+	pushw %ss
+	popw %es
+	movw %bp, %di
+	subw %cs:rm_s_r_len-rm_stubs, %di
+	lcallw *%cs:rm_s_r-rm_stubs
+	popw %di
+	popw %es
+	popw %ax
+	int $0x21
+	pushfw
+	pushw %ax
+	pushw %es
+	pushw %di
+	movb $1, %al
+	pushw %ss
+	popw %es
+	movw %bp, %di
+	subw %cs:rm_s_r_len-rm_stubs, %di
+	lcallw *%cs:rm_s_r-rm_stubs
+	popw %di
+	popw %es
+	popw %ax
+	popfw
+	movw %bp, %sp
+	popw %bp
+	/* keep the flags int 21h returned */
+	lretw $2
+/* msdos terminate helper: entered with an iret frame and the PSP in si,
+ * makes DOS come back there when the program terminates */
+.globl rm_term
+rm_term:
+	pushw %bp
+	movw %sp, %bp
+	pushw %ds
+	pushw %bx
+	movw %si, %ds
+	movw 2(%bp), %bx
+	movw %bx, 0x0a
+	movw 4(%bp), %bx
+	movw %bx, 0x0c
+	popw %bx
+	popw %ds
+	popw %bp
+	int $0x21
+	iretw
+.globl rm_stubs_end
+rm_stubs_end:
+	.code32
+
+/* int ldtmon_call32(eax, ebx, ecx, edx, const __dpmi_paddr *api) */
+.globl ldtmon_call32
+ldtmon_call32:
+	pushl %ebx
+	pushl %esi
+	movl 12(%esp), %eax
+	movl 16(%esp), %ebx
+	movl 20(%esp), %ecx
+	movl 24(%esp), %edx
+	movl 28(%esp), %esi
+	lcall *(%esi)
+	popl %esi
+	popl %ebx
+	xorl %eax, %eax
+	ret
+
+/* the same for an entry that returns with a 16-bit retf: the return
+ * address is below 64K because this file is linked first */
+.globl ldtmon_call16
+ldtmon_call16:
+	pushl %ebx
+	pushl %esi
+	movl 28(%esp), %esi
+	pushw %cs
+	movl $1f, %eax
+	pushw %ax
+	movl 16(%esp), %eax
+	movl 20(%esp), %ebx
+	movl 24(%esp), %ecx
+	movl 28(%esp), %edx
+	ljmp *(%esi)
+1:
+	popl %esi
+	popl %ebx
+	xorl %eax, %eax
+	ret
+
+/* where a helper sends the client to terminate */
+.globl quit_stub
+quit_stub:
+	int $0x21
+
+.data
+	.p2align 2
+.globl dseg32
+dseg32:
+	.long 0
+.globl cur_sp
+cur_sp:
+	.long 0
+/* the host's int 31h in the current client: offset, then selector */
+.globl int31_prev
+int31_prev:
+	.long 0, 0
+
+.bss
+	.p2align 4
+.globl pmdapi_stack
+pmdapi_stack:
+	.space STK_CHUNK * STK_DEPTH

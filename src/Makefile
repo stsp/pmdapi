@@ -1,49 +1,37 @@
-CC = i586-pc-msdosdjgpp-gcc
-LD = i586-pc-msdosdjgpp-gcc
-CFLAGS = -Wall -fms-extensions -fplan9-extensions
-CPPFLAGS = -I.
-CFILES = wrapper.c instremu.c msdoshlp.c startup.c handlers.c calls.c \
+# pmdapi, built with dj64dev as a plain 32bit DOS program (dj32).
+DJTGT ?= dj32
+SOURCES = startup.c wrapper.c msdoshlp.c dpmi_api.c \
     msdos/msdos.c msdos/segreg.c msdos/msdos_ldt.c msdos/instr_dec.c \
-    msdos/callbacks.c msdos/emm.c msdos/xms.c msdos/lio.c
-SFILES = entry.S
-OFILES = $(CFILES:.c=.o) $(SFILES:.S=.o)
-GFILES = asm-offsets.h asm-offsets.s
-PROGRAM = pmdapi.exe
+    msdos/callbacks.c msdos/emm.c msdos/xms.c msdos/lio.c msdos/hlpmisc.c
+AS_SOURCES = entry.S
+TGT = pmdapi
+EXE = pmdapi.exe
 
-define gen-asm-offsets
-	(set -e; \
-	 echo "#ifndef __ASM_OFFSETS_H__"; \
-	 echo "#define __ASM_OFFSETS_H__"; \
-	 echo "/*"; \
-	 echo " * Generated at `date`, DO NOT MODIFY."; \
-	 echo " */"; \
-	 echo ""; \
-	 sed -ne "/^->/{s:^->\([^ ]*\) [\$$#]*\([^ ]*\) \(.*\):#define \1 \2 /* \3 */:; s:->::; p;}"; \
-	 echo ""; \
-	 echo "#endif" )
-endef
+# the below vars must be named exactly like this for dj64.mk
+CFLAGS = -Wall -O2 -ggdb3 -fms-extensions -fplan9-extensions -I. -Imsdos
+DJCFLAGS = $(CFLAGS)
+OBJECTS = $(SOURCES:.c=.o)
+AS_OBJECTS = $(AS_SOURCES:.S=.o)
 
-.SUFFIXES: .c .o .s .S .h
+all: $(EXE)
 
-all: $(PROGRAM)
+clean: clean_$(DJTGT)
+	$(RM) $(TGT) $(EXE) $(EXE).dbg $(OBJECTS)
 
-clean:
-	rm -f $(PROGRAM) $(OFILES) $(GFILES)
+install: $(EXE)
+	cp $(EXE) ..
 
-install:
-	cp $(PROGRAM) ..
+DJMK = $(shell pkg-config --silence-errors --variable=makeinc $(DJTGT))
+ifeq ($(wildcard $(DJMK)),)
+ifeq ($(filter clean,$(MAKECMDGOALS)),)
+$(error $(DJTGT) not installed)
+endif
+clean_$(DJTGT):
+else
+include $(DJMK)
+endif
 
-.c.o .S.o:
-	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
+$(OBJECTS): $(wildcard *.h msdos/*.h)
 
-.c.s:
-	$(CC) $(CFLAGS) $(CPPFLAGS) -S -o $@ $<
-
-asm-offsets.h: asm-offsets.s
-	$(call gen-asm-offsets) < $< > $@
-
-entry.o: asm-offsets.h
-
-$(OFILES): $(wildcard *.h)
-$(PROGRAM): $(OFILES)
-	$(LD) $(LDFLAGS) -o $@ $(OFILES)
+$(EXE): $(DJ64_XLIB)
+	$(LINK) -d $@.dbg $(DJ64_LINKARGS) $< -o $@ $(DJ64_XLDFLAGS)

@@ -1,42 +1,34 @@
-#ifndef __ENTRY_H
-#define __ENTRY_H
+/*
+ * What entry.S and the C code share.
+ */
+#ifndef ENTRY_H
+#define ENTRY_H
 
-#ifndef __ASSEMBLER__
+#include <stddef.h>
+#include "asm.h"
+#include "cpu.h"
 
-#include "sigcontext.h"
+/* what the stubs build on our stack for pmdapi_entry() */
+struct entry_frame {
+    cpuctx_t regs;
+    unsigned id;
+    unsigned ss;
+    unsigned esp;
+};
+static_assert(offsetof(cpuctx_t, eip) == PM_eip, "PM_eip");
+static_assert(offsetof(cpuctx_t, eflags) == PM_eflags, "PM_eflags");
+static_assert(offsetof(cpuctx_t, esp) == PM_esp, "PM_esp");
+static_assert(offsetof(cpuctx_t, ss) == PM_ss, "PM_ss");
+static_assert(offsetof(cpuctx_t, gs) == PM_gs, "PM_gs");
+static_assert(offsetof(struct entry_frame, id) == EF_id, "EF_id");
+static_assert(offsetof(struct entry_frame, esp) == EF_esp, "EF_esp");
+static_assert(sizeof(struct entry_frame) == EF_size, "EF_size");
 
-extern void entry32(void);
-extern void dos32_int21(void);
-extern void dos16_int21(void);
-extern void code16(void);
-extern void entry16(void);
-extern void code16_end(void);
-extern void data16(void);
-extern unsigned long cs32_desc[2];
-extern unsigned long ds32_desc[2];
-extern unsigned long clnt_is_32;
-extern unsigned long dseg32;
-extern void data16_end(void);
+extern char stubs[], rsp_stub16[], rsp_stub32[], quit_stub[], int31_entry[];
+extern uint32_t int31_prev[2];
+extern unsigned char pmdapi_stack[];
+extern unsigned dseg32, cur_sp;
 
-extern void entry_MSDOS_API_call(void);
-extern void MSDOS_API_call(struct sigcontext *scp);
-extern void entry_MSDOS_API_WINOS2_call(void);
-extern void MSDOS_API_WINOS2_call(struct sigcontext *scp);
-extern void entry_MSDOS_XMS_call(void);
-extern void MSDOS_XMS_call(struct sigcontext *scp);
-extern void MSDOS_rmcb_call0(struct sigcontext *scp);
-extern void MSDOS_rmcb_call1(struct sigcontext *scp);
-extern void MSDOS_rmcb_call2(struct sigcontext *scp);
-extern void entry_MSDOS_rmcb_call0(void);
-extern void entry_MSDOS_rmcb_call1(void);
-extern void entry_MSDOS_rmcb_call2(void);
-extern void entry_MSDOS_fault(void);
-extern void entry_MSDOS_pagefault(void);
-extern void entry_MSDOS_LDT_call16(void);
-extern void entry_MSDOS_LDT_call32(void);
-extern void entry_DPMI_msdos(void);
+void pmdapi_entry(struct entry_frame *f);
 
-void entry(unsigned short term, unsigned short handle, short prev);
-
-#endif
 #endif
