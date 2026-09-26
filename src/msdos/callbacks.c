@@ -43,13 +43,13 @@ static void do_retf(struct RealModeCallStructure *rmreg, int rmask)
     RMREG(sp) += 4;
 }
 
-static void rmcb_ret_handler(sigcontext_t *scp,
+static void rmcb_ret_handler(cpuctx_t *scp,
 		      struct RealModeCallStructure *rmreg, int is_32)
 {
     do_retf(rmreg, (1 << ss_INDEX) | (1 << esp_INDEX));
 }
 
-static void rmcb_ret_from_ps2(sigcontext_t *scp,
+static void rmcb_ret_from_ps2(cpuctx_t *scp,
 		       struct RealModeCallStructure *rmreg, int is_32)
 {
     if (is_32)
@@ -59,14 +59,14 @@ static void rmcb_ret_from_ps2(sigcontext_t *scp,
     do_retf(rmreg, (1 << ss_INDEX) | (1 << esp_INDEX));
 }
 
-static void rm_to_pm_regs(sigcontext_t *scp,
+static void rm_to_pm_regs(cpuctx_t *scp,
 			  const struct RealModeCallStructure *rmreg,
 			  unsigned int mask)
 {
     /* WARNING - realmode flags can contain the dreadful NT flag
      * if we don't use safety masks. */
     if (mask & (1 << eflags_INDEX))
-	_eflags = 0x0202 | (0x0dd5 & RMREG(flags));
+	_eflags = flags_to_pm(RMREG(flags));
     if (mask & (1 << eax_INDEX))
 	_LWORD(eax) = RMLWORD(ax);
     if (mask & (1 << ebx_INDEX))
@@ -83,12 +83,12 @@ static void rm_to_pm_regs(sigcontext_t *scp,
 	_LWORD(ebp) = RMLWORD(bp);
 }
 
-static void pm_to_rm_regs(const sigcontext_t *scp,
+static void pm_to_rm_regs(const cpuctx_t *scp,
 			  struct RealModeCallStructure *rmreg,
 			  unsigned int mask)
 {
   if (mask & (1 << eflags_INDEX))
-    RMREG(flags) = _eflags_;
+    RMREG(flags) = flags_to_rm(_eflags_);
   if (mask & (1 << eax_INDEX))
     X_RMREG(eax) = _LWORD_(eax_);
   if (mask & (1 << ebx_INDEX))
@@ -105,7 +105,7 @@ static void pm_to_rm_regs(const sigcontext_t *scp,
     X_RMREG(ebp) = _LWORD_(ebp_);
 }
 
-static void mouse_callback(sigcontext_t *scp,
+static void mouse_callback(cpuctx_t *scp,
 		    const struct RealModeCallStructure *rmreg,
 		    int is_32, void *arg)
 {
@@ -137,7 +137,7 @@ static void mouse_callback(sigcontext_t *scp,
     _eip = mouseCallBack->offset;
 }
 
-static void ps2_mouse_callback(sigcontext_t *scp,
+static void ps2_mouse_callback(cpuctx_t *scp,
 			const struct RealModeCallStructure *rmreg,
 			int is_32, void *arg)
 {
@@ -185,7 +185,7 @@ static void ps2_mouse_callback(sigcontext_t *scp,
     _eip = PS2mouseCallBack->offset;
 }
 
-struct pmrm_ret msdos_ext_call(sigcontext_t *scp,
+struct pmrm_ret msdos_ext_call(cpuctx_t *scp,
 	struct RealModeCallStructure *rmreg,
 	unsigned short rm_seg, void *(*arg)(int), int off)
 {
@@ -201,7 +201,7 @@ struct pmrm_ret msdos_ext_call(sigcontext_t *scp,
     return ret;
 }
 
-struct pext_ret msdos_ext_ret(sigcontext_t *scp,
+struct pext_ret msdos_ext_ret(cpuctx_t *scp,
 	const struct RealModeCallStructure *rmreg,
 	unsigned short rm_seg, int off)
 {
@@ -214,7 +214,7 @@ struct pext_ret msdos_ext_ret(sigcontext_t *scp,
     return ret;
 }
 
-void msdos_api_call(sigcontext_t *scp, void *arg)
+void msdos_api_call(cpuctx_t *scp, void *arg)
 {
     u_short *(*cb)(void) = arg;
     const u_short *ldt_alias = cb();
@@ -233,7 +233,7 @@ void msdos_api_call(sigcontext_t *scp, void *arg)
     }
 }
 
-void msdos_api_winos2_call(sigcontext_t *scp, void *arg)
+void msdos_api_winos2_call(cpuctx_t *scp, void *arg)
 {
     u_short *(*cb)(void) = arg;
     const u_short *ldt_alias_winos2 = cb();
@@ -252,14 +252,14 @@ void msdos_api_winos2_call(sigcontext_t *scp, void *arg)
     }
 }
 
-static void (*rmcb_handlers[])(sigcontext_t *scp,
+static void (*rmcb_handlers[])(cpuctx_t *scp,
 		 const struct RealModeCallStructure *rmreg,
 		 int is_32, void *arg) = {
     [RMCB_MS] = mouse_callback,
     [RMCB_PS2MS] = ps2_mouse_callback,
 };
 
-static void (*rmcb_ret_handlers[])(sigcontext_t *scp,
+static void (*rmcb_ret_handlers[])(cpuctx_t *scp,
 		 struct RealModeCallStructure *rmreg, int is_32) = {
     [RMCB_MS] = rmcb_ret_handler,
     [RMCB_PS2MS] = rmcb_ret_from_ps2,

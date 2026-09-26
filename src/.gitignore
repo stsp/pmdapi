@@ -2,3 +2,5 @@
 *.exe
 asm-offsets.h
 asm-offsets.s
+tmp.elf
+*.dbg

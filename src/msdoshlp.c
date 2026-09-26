@@ -8,65 +8,81 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
- *
- *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
  */
 
 /*
- * Purpose: glue between msdos.c and the rest of dosemu
- * This is needed to keep msdos.c portable to djgpp.
+ * Purpose: glue between dosemu2's msdos.c and a real DPMI host.
  *
- * Author: Stas Sergeev
+ * dosemu2 runs its msdos helpers as coopthreads that it enters from
+ * hlt instructions in its own code segment. Here the plugin code is a
+ * DPMI client of its own: the client enters it through the stubs in
+ * entry.S, and a helper that needs real mode just makes a DPMI call and
+ * waits for it, so what dosemu2 does with threads is a plain call here.
+ *
+ * Every stub has a continuation stub: it is what dosemu2 has after the
+ * hlt (a lret or an iret), and a handler that leaves cs:eip on it gets
+ * there. Continuations and stubs reached this way are processed right
+ * here, without going back to the client, see pmdapi_entry().
  */
 
-#ifdef DOSEMU
-#include "emu.h"
-#include "utilities.h"
-#include "dos2linux.h"
-#include "int.h"
-#include "hlt.h"
-#include "timers.h"
-#include "coopth.h"
-#include "coopth_pm.h"
-#include "dpmisel.h"
-#define RMREG(r) (rmreg->r)
-#else
+#include <stdlib.h>
+#include <string.h>
+#include <assert.h>
+#include <dpmi.h>
 #include <sys/segments.h>
-#include "calls.h"
-#include "entry.h"
-#define RMREG(r) (rmreg->x.r)
-#endif
 #include "emudpmi.h"
 #include "dpmi_api.h"
 #include "cpu.h"
+#include "entry.h"
 #include "msdoshlp.h"
-#include <assert.h>
+#include "pmdapi.h"
 
 #define MAX_CBKS 3
+#define MAX_EXT 32
+#define MAX_HLP 16
+enum {
+    ID_FAULT, ID_PAGEFAULT, ID_API, ID_WINOS2, ID_LDT16, ID_LDT32,
+    ID_INT31,
+    ID_RMCB_CALL0, ID_RMCB_CALL1, ID_RMCB_CALL2,
+    ID_RMCB_RET0, ID_RMCB_RET1, ID_RMCB_RET2,
+    ID_EXT0,
+    ID_HLP0 = ID_EXT0 + MAX_EXT,
+    ID_MAX = ID_HLP0 + MAX_HLP,
+    /* the continuation of stub n is stub CONT_BASE + n */
+    CONT_BASE = 64,
+};
+static_assert(ID_MAX <= CONT_BASE, "too many stubs");
+static_assert(ID_INT31 == ID_INT31_STUB, "int31_entry jumps to the wrong stub");
+static_assert(CONT_BASE * 2 <= STUB_NUM, "too many stubs");
+#define ID_RSP16 -1
+#define ID_RSP32 -2
+
+enum { C_NONE, C_RETF, C_RETF16, C_RETF32, C_IRET, C_IRET_EXT };
+
 struct msdos_ops {
-    void (*fault)(sigcontext_t *scp, void *arg);
+    void (*fault)(cpuctx_t *scp, void *arg);
     void *fault_arg;
-    void (*pagefault)(sigcontext_t *scp, void *arg);
+    void (*pagefault)(cpuctx_t *scp, void *arg);
     void *pagefault_arg;
-    void (*api_call)(sigcontext_t *scp, void *arg);
+    void (*api_call)(cpuctx_t *scp, void *arg);
     void *api_arg;
-    void (*api_winos2_call)(sigcontext_t *scp, void *arg);
+    void (*api_winos2_call)(cpuctx_t *scp, void *arg);
     void *api_winos2_arg;
-    void (*ldt_update_call16)(sigcontext_t *scp, void *arg);
-    void (*ldt_update_call32)(sigcontext_t *scp, void *arg);
-    struct pmrm_ret (*ext_call)(sigcontext_t *scp,
+    void (*ldt_update_call16)(cpuctx_t *scp, void *arg);
+    void (*ldt_update_call32)(cpuctx_t *scp, void *arg);
+    void (*rsp_call16)(cpuctx_t *scp, void *arg);
+    void (*rsp_call32)(cpuctx_t *scp, void *arg);
+    struct pmrm_ret (*ext_call)(cpuctx_t *scp,
 	struct RealModeCallStructure *rmreg, unsigned short rm_seg,
 	void *(*arg)(int), int off);
     void *(*ext_arg)(int);
-    struct pext_ret (*ext_ret)(sigcontext_t *scp,
+    struct pext_ret (*ext_ret)(cpuctx_t *scp,
 	const struct RealModeCallStructure *rmreg, unsigned short rm_seg,
 	int off);
-    void (*rmcb_handler[MAX_CBKS])(sigcontext_t *scp,
+    void (*rmcb_handler[MAX_CBKS])(cpuctx_t *scp,
 	const struct RealModeCallStructure *rmreg, int is_32, void *arg);
     void *rmcb_arg[MAX_CBKS];
-    void (*rmcb_ret_handler[MAX_CBKS])(sigcontext_t *scp,
+    void (*rmcb_ret_handler[MAX_CBKS])(cpuctx_t *scp,
 	struct RealModeCallStructure *rmreg, int is_32);
     int (*is_32)(void);
     u_short cb_es;
@@ -74,251 +90,207 @@ struct msdos_ops {
 };
 static struct msdos_ops msdos;
 
-struct exec_helper_s {
-    int tid;
-    far_t entry;
-    far_t s_r;
-    u_char len;
-};
-struct rm_helper_s {
-    far_t entry;
-};
+static const struct msdos_ldt_ops *msdos_ldt;
+
 static struct dos_helper_s ext_helper;
-static struct exec_helper_s exec_helper;
-static struct rm_helper_s term_helper;
+struct hlp_s {
+    void (*thr)(void *);
+    void (*post)(cpuctx_t *);
+};
+static struct hlp_s hlps[MAX_HLP];
+static int num_hlps;
 
-static void *hlt_state;
+/* the real mode helpers, copied to DOS memory */
+extern char rm_stubs[], rm_stubs_end[], rm_s_r[], rm_s_r_len[];
+extern char rm_exec[], rm_term[];
+extern char quit_stub[];
+static unsigned short rm_stubs_seg;
+#define RM_OFF(x) ((x) - rm_stubs)
 
-static void do_retf(sigcontext_t *scp)
+/* state of one pass through pmdapi_entry() */
+struct loop_s {
+    unsigned entry_flags;
+    int post_push;
+    unsigned post_arg;
+};
+
+static unsigned stub_off(int id)
 {
-    int is_32 = msdos.is_32();
-    void *sp = SEL_ADR_CLNT(_ss, _esp, is_32);
+    return (uintptr_t)stubs + id * STUB_SIZE;
+}
+
+static int stub_id(unsigned eip)
+{
+    unsigned off = eip - (uintptr_t)stubs;
+    if (eip < (uintptr_t)stubs || off >= STUB_NUM * STUB_SIZE ||
+	    (off % STUB_SIZE))
+	return -1;
+    return off / STUB_SIZE;
+}
+
+static int cont_kind(int id)
+{
+    switch (id) {
+    case ID_FAULT:
+    case ID_PAGEFAULT:
+    case ID_API:
+    case ID_WINOS2:
+	return C_RETF;
+    case ID_LDT16:
+	return C_RETF16;
+    case ID_LDT32:
+	return C_RETF32;
+    case ID_RMCB_RET0 ... ID_RMCB_RET2:
+	return C_IRET;
+    case ID_EXT0 ... ID_EXT0 + MAX_EXT - 1:
+    case ID_INT31:
+	return C_IRET_EXT;
+    }
+    return C_NONE;
+}
+
+/* the size of the stack is that of ss, not of the client */
+static void *stk_adr(cpuctx_t *scp)
+{
+    return SEL_ADR(_ss, _esp);
+}
+
+static void stk_add(cpuctx_t *scp, int delta)
+{
+    if (dpmi_segment_is32(_ss))
+	_esp += delta;
+    else
+	_LWORD(esp) += delta;
+}
+
+static void do_retf_x(cpuctx_t *scp, int is_32)
+{
+    void *sp = stk_adr(scp);
     if (is_32) {
 	unsigned int *ssp = sp;
 	_eip = *ssp++;
 	_cs = *ssp++;
-	_esp += 8;
+	stk_add(scp, 8);
     } else {
 	unsigned short *ssp = sp;
-	_LWORD(eip) = *ssp++;
+	_eip = *ssp++;
 	_cs = *ssp++;
-	_LWORD(esp) += 4;
+	stk_add(scp, 4);
     }
 }
 
-static void do_iret(sigcontext_t *scp)
+static void do_retf(cpuctx_t *scp)
+{
+    do_retf_x(scp, msdos.is_32());
+}
+
+static void do_dpmi_iret(cpuctx_t *scp)
 {
     int is_32 = msdos.is_32();
-    void *sp = SEL_ADR_CLNT(_ss, _esp, is_32);
+    void *sp = stk_adr(scp);
     if (is_32) {
 	unsigned int *ssp = sp;
 	_eip = *ssp++;
 	_cs = *ssp++;
-	set_EFLAGS(_eflags, *ssp++);
-	_esp += 12;
+	_eflags = dpmi_flags_from_stack_iret(scp, *ssp++);
+	stk_add(scp, 12);
     } else {
 	unsigned short *ssp = sp;
-	_LWORD(eip) = *ssp++;
+	_eip = *ssp++;
 	_cs = *ssp++;
-	set_EFLAGS(_eflags, *ssp++);
-	_LWORD(esp) += 6;
+	_eflags = dpmi_flags_from_stack_iret(scp, *ssp++);
+	stk_add(scp, 6);
     }
-    if (debug_level('M') >= 9)
-	D_printf("iret %s", DPMI_show_state(scp));
 }
 
-static void hlp_fill_rest(struct dos_helper_s *h,
-	unsigned short (*rm_seg)(sigcontext_t *, int, void *), void *rm_arg)
+/* return from an interrupt the ext helper has served: the flags are the
+ * ones the helper leaves, as the iret frame dosemu2 builds for its thread
+ * carries them */
+static void do_ext_iret(cpuctx_t *scp, struct loop_s *l)
 {
-    h->rm_seg = rm_seg;
-    h->rm_arg = rm_arg;
+    unsigned flags = _eflags;
+    int is_32 = msdos.is_32();
+
+    _eflags = l->entry_flags;
+    do_retf_x(scp, is_32);
+    stk_add(scp, is_32 ? 4 : 2);
+    _eflags = dpmi_flags_from_stack_iret(scp, flags);
+    if (l->post_push) {
+	l->post_push = 0;
+	if (is_32) {
+	    stk_add(scp, -4);
+	    *(uint32_t *)stk_adr(scp) = l->post_arg;
+	} else {
+	    stk_add(scp, -2);
+	    *(uint16_t *)stk_adr(scp) = l->post_arg;
+	}
+    }
 }
 
-struct pmaddr_s doshlp_get_entry(struct dos_helper_s *h)
+static void do_callf(cpuctx_t *scp, struct pmaddr_s pma)
 {
-    struct pmaddr_s ret = { .selector = dpmi_sel(), .offset = h->entry };
+    int is_32 = msdos.is_32();
+    if (is_32) {
+	unsigned int *ssp;
+	stk_add(scp, -8);
+	ssp = stk_adr(scp);
+	ssp[0] = _eip;
+	ssp[1] = _cs;
+    } else {
+	unsigned short *ssp;
+	stk_add(scp, -4);
+	ssp = stk_adr(scp);
+	ssp[0] = _LWORD(eip);
+	ssp[1] = _cs;
+    }
+    _cs = pma.selector;
+    _eip = pma.offset;
+}
+
+struct pmaddr_s doshlp_get_entry(unsigned entry)
+{
+    struct pmaddr_s ret = {
+	    .offset = entry,
+	    .selector = dpmi_sel(),
+	};
     return ret;
 }
 
-static void doshlp_setup(struct dos_helper_s *h, const char *name,
-	void (*thr)(void *), void (*post)(sigcontext_t *))
+struct pmaddr_s doshlp_get_entry16(unsigned entry)
 {
-#ifdef DOSEMU
-    h->tid = coopth_create_pm(name, thr, post, hlt_state,
-		DPMI_SEL_OFF(MSDOS_hlt_start),
-		&h->entry);
-#endif
+    return doshlp_get_entry(entry);
+}
+
+struct pmaddr_s doshlp_get_entry32(unsigned entry)
+{
+    return doshlp_get_entry(entry);
+}
+
+void doshlp_setup(struct dos_helper_s *h, const char *name,
+	void (*thr)(void *), void (*post)(cpuctx_t *))
+{
+    assert(num_hlps < MAX_HLP);
+    hlps[num_hlps].thr = thr;
+    hlps[num_hlps].post = post;
+    h->tid = ID_HLP0 + num_hlps;
+    h->entry = stub_off(h->tid);
+    num_hlps++;
 }
 
 void doshlp_setup_retf(struct dos_helper_s *h, const char *name,
 	void (*thr)(void *),
-	unsigned short (*rm_seg)(sigcontext_t *, int, void *),
+	unsigned short (*rm_seg)(cpuctx_t *, int, void *),
 	void *rm_arg)
 {
     doshlp_setup(h, name, thr, do_retf);
-    hlp_fill_rest(h, rm_seg, rm_arg);
+    h->rm_seg = rm_seg;
+    h->rm_arg = rm_arg;
 }
 
-static void do_callf(sigcontext_t *scp, struct pmaddr_s pma)
-{
-    int is_32 = msdos.is_32();
-    void *sp = SEL_ADR_CLNT(_ss, _esp, is_32);
-    if (is_32) {
-	unsigned int *ssp = sp;
-	*--ssp = _cs;
-	*--ssp = _eip;
-	_esp -= 8;
-    } else {
-	unsigned short *ssp = sp;
-	*--ssp = _cs;
-	*--ssp = _LWORD(eip);
-	_LWORD(esp) -= 4;
-    }
-    _cs = pma.selector;
-    _eip = pma.offset;
-}
-
-#ifdef DOSEMU
-static void iret2far(int tid, void *arg, void *arg2)
-{
-    sigcontext_t *scp = arg2;
-    struct pmaddr_s pma;
-
-    pma.selector = _cs;
-    pma.offset = _eip;
-    coopth_push_user_data(tid, (void *)(uintptr_t)_eflags);
-    do_iret(scp);
-    do_callf(scp, pma);
-    if (debug_level('M') >= 9)
-	D_printf("iret2far %s\n", DPMI_show_state(scp));
-}
-#endif
-
-static void make_iret_frame(sigcontext_t *scp, struct pmaddr_s pma)
-{
-    int is_32 = msdos.is_32();
-    void *sp = SEL_ADR_CLNT(_ss, _esp, is_32);
-
-    if (is_32) {
-	unsigned int *ssp = sp;
-	*--ssp = get_FLAGS(_eflags);
-	*--ssp = _cs;
-	*--ssp = _eip;
-	_esp -= 12;
-    } else {
-	unsigned short *ssp = sp;
-	*--ssp = get_FLAGS(_eflags);
-	*--ssp = _cs;
-	*--ssp = _LWORD(eip);
-	_LWORD(esp) -= 6;
-    }
-    _cs = pma.selector;
-    _eip = pma.offset;
-}
-
-#ifdef DOSEMU
-static void far2iret(int tid, void *arg, void *arg2)
-{
-    sigcontext_t *scp = arg2;
-    void *udata = coopth_pop_user_data(tid);
-    struct pmaddr_s pma;
-
-    pma.selector = _cs;
-    pma.offset = _eip;
-    do_retf(scp);
-    make_iret_frame(scp, pma);
-    _eflags = (uintptr_t)udata;
-    if (debug_level('M') >= 9)
-	D_printf("far2iret %s\n", DPMI_show_state(scp));
-}
-#endif
-
-static void doshlp_setup_m(struct dos_helper_s *h, const char *name,
-	void (*thr)(void *), void (*post)(sigcontext_t *), int len)
-{
-#ifdef DOSEMU
-    h->tid = coopth_create_pm_multi(name, thr, post, hlt_state,
-		DPMI_SEL_OFF(MSDOS_hlt_start), len,
-		&h->entry, h->e_offs);
-    coopth_set_ctx_handlers(h->tid, iret2far, far2iret, NULL);
-#endif
-}
-
-#ifdef DOSEMU
-static void s_r_call(u_char al, u_short es, u_short di)
-{
-    u_short saved_ax = LWORD(eax), saved_es = SREG(es), saved_di = LWORD(edi);
-
-    LO(ax) = al;
-    SREG(es) = es;
-    LWORD(edi) = di;
-    do_call_back(exec_helper.s_r.segment, exec_helper.s_r.offset);
-    LWORD(eax) = saved_ax;
-    SREG(es) = saved_es;
-    LWORD(edi) = saved_di;
-}
-
-static void exechlp_thr(void *arg)
-{
-    uint32_t saved_flags;
-
-    assert(LWORD(esp) >= exec_helper.len);
-    LWORD(esp) -= exec_helper.len;
-    s_r_call(0, SREG(ss), LWORD(esp));
-    do_int_call_back(0x21);
-    saved_flags = REG(eflags);
-    s_r_call(1, SREG(ss), LWORD(esp));
-    REG(eflags) = saved_flags;
-    LWORD(esp) += exec_helper.len;
-}
-
-static void termhlp_proc(Bit16u idx, HLT_ARG(arg))
-{
-    struct PSP *psp = SEG2UNIX(LWORD(esi));
-    fake_iret();
-    /* put our return address there */
-    psp->int22_copy = MK_FP16(SREG(cs), LWORD(eip));
-    do_int(0x21);
-}
-#endif
-
-static void exechlp_setup(void)
-{
-#ifdef DOSEMU
-    exec_helper.entry.segment = BIOS_HLT_BLK_SEG;
-    exec_helper.tid = coopth_create_vm86("msdos exec thr",
-		exechlp_thr, fake_iret, &exec_helper.entry.offset);
-#endif
-}
-
-static void termhlp_setup(void)
-{
-#ifdef DOSEMU
-    emu_hlt_t hlt_hdlr = HLT_INITIALIZER;
-    hlt_hdlr.name = "msdos term handler";
-    hlt_hdlr.func = termhlp_proc;
-    term_helper.entry.segment = BIOS_HLT_BLK_SEG;
-    term_helper.entry.offset = hlt_register_handler_vm86(hlt_hdlr);
-#endif
-}
-
-static int get_cb(int num)
-{
-    switch (num) {
-    case 0:
-	return DPMI_SEL_OFF(MSDOS_rmcb_call0);
-    case 1:
-	return DPMI_SEL_OFF(MSDOS_rmcb_call1);
-    case 2:
-	return DPMI_SEL_OFF(MSDOS_rmcb_call2);
-    }
-    return 0;
-}
-
-struct pmaddr_s get_pmcb_handler(void (*handler)(sigcontext_t *,
+struct pmaddr_s get_pmcb_handler(void (*handler)(cpuctx_t *,
 	const struct RealModeCallStructure *, int, void *),
 	void *arg,
-	void (*ret_handler)(sigcontext_t *,
+	void (*ret_handler)(cpuctx_t *,
 	struct RealModeCallStructure *, int),
 	int num)
 {
@@ -328,48 +300,50 @@ struct pmaddr_s get_pmcb_handler(void (*handler)(sigcontext_t *,
     msdos.rmcb_arg[num] = arg;
     msdos.rmcb_ret_handler[num] = ret_handler;
     ret.selector = dpmi_sel();
-    ret.offset = get_cb(num);
+    ret.offset = stub_off(ID_RMCB_CALL0 + num);
     return ret;
 }
 
 struct pmaddr_s get_pm_handler(enum MsdOpIds id,
-	void (*handler)(sigcontext_t *, void *), void *arg)
+	void (*handler)(cpuctx_t *, void *), void *arg)
 {
-    struct pmaddr_s ret;
+    struct pmaddr_s ret = { .selector = dpmi_sel() };
     switch (id) {
     case MSDOS_FAULT:
 	msdos.fault = handler;
 	msdos.fault_arg = arg;
-	ret.selector = dpmi_sel();
-	ret.offset = DPMI_SEL_OFF(MSDOS_fault);
+	ret.offset = stub_off(ID_FAULT);
 	break;
     case MSDOS_PAGEFAULT:
 	msdos.pagefault = handler;
 	msdos.pagefault_arg = arg;
-	ret.selector = dpmi_sel();
-	ret.offset = DPMI_SEL_OFF(MSDOS_pagefault);
+	ret.offset = stub_off(ID_PAGEFAULT);
 	break;
     case API_CALL:
 	msdos.api_call = handler;
 	msdos.api_arg = arg;
-	ret.selector = dpmi_sel();
-	ret.offset = DPMI_SEL_OFF(MSDOS_API_call);
+	ret.offset = stub_off(ID_API);
 	break;
     case API_WINOS2_CALL:
 	msdos.api_winos2_call = handler;
 	msdos.api_winos2_arg = arg;
-	ret.selector = dpmi_sel();
-	ret.offset = DPMI_SEL_OFF(MSDOS_API_WINOS2_call);
+	ret.offset = stub_off(ID_WINOS2);
 	break;
     case MSDOS_LDT_CALL16:
 	msdos.ldt_update_call16 = handler;
-	ret.selector = dpmi_sel16();
-	ret.offset = DPMI_SEL_OFF(MSDOS_LDT_call16);
+	ret.offset = stub_off(ID_LDT16);
 	break;
     case MSDOS_LDT_CALL32:
 	msdos.ldt_update_call32 = handler;
-	ret.selector = dpmi_sel32();
-	ret.offset = DPMI_SEL_OFF(MSDOS_LDT_call32);
+	ret.offset = stub_off(ID_LDT32);
+	break;
+    case MSDOS_RSP_CALL16:
+	msdos.rsp_call16 = handler;
+	ret.offset = (uintptr_t)rsp_stub16;
+	break;
+    case MSDOS_RSP_CALL32:
+	msdos.rsp_call32 = handler;
+	ret.offset = (uintptr_t)rsp_stub32;
 	break;
     default:
 	dosemu_error("unknown pm handler\n");
@@ -381,27 +355,31 @@ struct pmaddr_s get_pm_handler(enum MsdOpIds id,
 
 struct pmaddr_s get_pmrm_handler_m(enum MsdOpIds id,
 	struct pmrm_ret (*handler)(
-	sigcontext_t *, struct RealModeCallStructure *,
+	cpuctx_t *, struct RealModeCallStructure *,
 	unsigned short, void *(*)(int), int),
 	void *(*arg)(int),
 	struct pext_ret (*ret_handler)(
-	sigcontext_t *, const struct RealModeCallStructure *,
+	cpuctx_t *, const struct RealModeCallStructure *,
 	unsigned short, int),
-	unsigned short (*rm_seg)(sigcontext_t *, int, void *),
+	unsigned short (*rm_seg)(cpuctx_t *, int, void *),
 	void *rm_arg, int len, int r_offs[])
 {
     struct dos_helper_s *h;
     struct pmaddr_s ret;
+    int i;
 
     switch (id) {
     case MSDOS_EXT_CALL:
+	assert(len <= MAX_EXT);
 	msdos.ext_call = handler;
 	msdos.ext_arg = arg;
 	msdos.ext_ret = ret_handler;
 	h = &ext_helper;
-	hlp_fill_rest(h, rm_seg, rm_arg);
-	memcpy(r_offs, h->e_offs, len * sizeof(r_offs[0]));
-	ret = doshlp_get_entry(h);
+	h->rm_seg = rm_seg;
+	h->rm_arg = rm_arg;
+	for (i = 0; i < len; i++)
+	    r_offs[i] = i * STUB_SIZE;
+	ret = doshlp_get_entry(stub_off(ID_EXT0));
 	break;
     default:
 	dosemu_error("unknown pmrm handler\n");
@@ -414,17 +392,22 @@ struct pmaddr_s get_pmrm_handler_m(enum MsdOpIds id,
 far_t get_exec_helper(void)
 {
     struct pmaddr_s pma;
-    exec_helper.len = DPMI_get_save_restore_address(&exec_helper.s_r, &pma);
-    return exec_helper.entry;
+    far_t s_r;
+    int len = DPMI_get_save_restore_address(&s_r, &pma);
+    unsigned base = SEGOFF2LINEAR(rm_stubs_seg, 0);
+
+    WRITE_WORD(base + RM_OFF(rm_s_r), s_r.offset);
+    WRITE_WORD(base + RM_OFF(rm_s_r) + 2, s_r.segment);
+    WRITE_WORD(base + RM_OFF(rm_s_r_len), len);
+    return MK_FARt(rm_stubs_seg, RM_OFF(rm_exec));
 }
 
 far_t get_term_helper(void)
 {
-    return term_helper.entry;
+    return MK_FARt(rm_stubs_seg, RM_OFF(rm_term));
 }
 
-#ifdef DOSEMU
-static void run_call_handler(int idx, sigcontext_t *scp)
+static void run_call_handler(int idx, cpuctx_t *scp)
 {
     int is_32 = msdos.is_32();
     struct RealModeCallStructure *rmreg =
@@ -434,7 +417,7 @@ static void run_call_handler(int idx, sigcontext_t *scp)
     msdos.rmcb_handler[idx](scp, rmreg, is_32, msdos.rmcb_arg[idx]);
 }
 
-static void run_ret_handler(int idx, sigcontext_t *scp)
+static void run_ret_handler(int idx, cpuctx_t *scp)
 {
     int is_32 = msdos.is_32();
     struct RealModeCallStructure *rmreg =
@@ -444,60 +427,7 @@ static void run_ret_handler(int idx, sigcontext_t *scp)
     _edi = msdos.cb_edi;
 }
 
-void msdos_pm_call(sigcontext_t *scp)
-{
-    if (_eip == 1 + DPMI_SEL_OFF(MSDOS_fault)) {
-	msdos.fault(scp, msdos.fault_arg);
-    } else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_pagefault)) {
-	msdos.pagefault(scp, msdos.pagefault_arg);
-    } else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_API_call)) {
-	msdos.api_call(scp, msdos.api_arg);
-    } else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_API_WINOS2_call)) {
-	msdos.api_winos2_call(scp, msdos.api_winos2_arg);
-    } else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_LDT_call16)) {
-	msdos.ldt_update_call16(scp, NULL);
-    } else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_LDT_call32)) {
-	msdos.ldt_update_call32(scp, NULL);
-    } else if (_eip >= 1 + DPMI_SEL_OFF(MSDOS_rmcb_call_start) &&
-	    _eip < 1 + DPMI_SEL_OFF(MSDOS_rmcb_call_end)) {
-	int idx, ret;
-	if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_call0)) {
-	    idx = 0;
-	    ret = 0;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_call1)) {
-	    idx = 1;
-	    ret = 0;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_call2)) {
-	    idx = 2;
-	    ret = 0;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_ret0)) {
-	    idx = 0;
-	    ret = 1;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_ret1)) {
-	    idx = 1;
-	    ret = 1;
-	} else if (_eip == 1 + DPMI_SEL_OFF(MSDOS_rmcb_ret2)) {
-	    idx = 2;
-	    ret = 1;
-	} else {
-	    error("MSDOS: unknown rmcb %#x\n", _eip);
-	    return;
-	}
-	if (ret)
-	    run_ret_handler(idx, scp);
-	else
-	    run_call_handler(idx, scp);
-    } else if (_eip >= 1 + DPMI_SEL_OFF(MSDOS_hlt_start) &&
-	    _eip < 1 + DPMI_SEL_OFF(MSDOS_hlt_end)) {
-	Bit16u offs = _eip - (1 + DPMI_SEL_OFF(MSDOS_hlt_start));
-	hlt_handle(hlt_state, offs, scp);
-    } else {
-	error("MSDOS: unknown pm call %#x\n", _eip);
-    }
-}
-#endif
-
-static void do_int_call(sigcontext_t *scp, int is_32, int num,
+static void do_int_call(cpuctx_t *scp, int is_32, int num,
 	struct RealModeCallStructure *rmreg)
 {
     RMREG(ss) = 0;
@@ -505,7 +435,17 @@ static void do_int_call(sigcontext_t *scp, int is_32, int num,
     _dpmi_simulate_real_mode_interrupt(scp, is_32, num, (__dpmi_regs *)rmreg);
 }
 
-static void copy_rest(sigcontext_t *scp, sigcontext_t *src)
+static void do_int_to(cpuctx_t *scp, int is_32, far_t dst,
+		struct RealModeCallStructure *rmreg)
+{
+    RMREG(ss) = 0;
+    RMREG(sp) = 0;
+    RMREG(cs) = dst.segment;
+    RMREG(ip) = dst.offset;
+    _dpmi_simulate_real_mode_procedure_iret(scp, is_32, (__dpmi_regs *)rmreg);
+}
+
+static void copy_rest(cpuctx_t *scp, cpuctx_t *src)
 {
 #define CP_R(r) _##r = get_##r(src)
     CP_R(eax);
@@ -517,14 +457,13 @@ static void copy_rest(sigcontext_t *scp, sigcontext_t *src)
     CP_R(es);
 }
 
-static void do_restore(sigcontext_t *scp, sigcontext_t *sa)
+static void do_restore(cpuctx_t *scp, cpuctx_t *sa)
 {
     /* make sure most things did not change */
 #define _CHK(r) assert(_##r == get_##r(sa))
     _CHK(ds);
     _CHK(fs);
     _CHK(gs);
-    /* mainly code and stack should be the same */
     _CHK(cs);
     _CHK(eip);
     _CHK(ss);
@@ -534,59 +473,36 @@ static void do_restore(sigcontext_t *scp, sigcontext_t *sa)
     copy_rest(scp, sa);
 }
 
-void doshlp_quit_dpmi(sigcontext_t *scp)
+void doshlp_quit_dpmi(cpuctx_t *scp)
 {
     struct pmaddr_s pma = {
+	.offset = (uintptr_t)quit_stub,
 	.selector = dpmi_sel(),
-	.offset = DPMI_SEL_OFF(DPMI_msdos),
     };
-    coopth_leave();
-    do_iret(scp);
     _eax = 0x4c01;
     do_callf(scp, pma);
 }
 
-static void do_int_to(sigcontext_t *scp, int is_32, far_t dst,
-		struct RealModeCallStructure *rmreg)
+struct pmaddr_s doshlp_get_abort_helper(void)
 {
-    RMREG(ss) = 0;
-    RMREG(sp) = 0;
-    RMREG(cs) = dst.segment;
-    RMREG(ip) = dst.offset;
-    _dpmi_simulate_real_mode_procedure_iret(scp, is_32, (__dpmi_regs *)rmreg);
+    return (struct pmaddr_s){
+	.offset = (uintptr_t)quit_stub,
+	.selector = dpmi_sel(),
+    };
 }
 
-struct postext_args {
-    sigcontext_t *scp;
-    unsigned arg;
-};
-
-static struct postext_args pargs;
-
-static void do_post_push(void *arg)
+void doshlp_call_reinit(cpuctx_t *scp)
 {
-    struct postext_args *args = arg;
-    sigcontext_t *scp = args->scp;
-    int is_32 = msdos.is_32();
-    if (is_32) {
-        _esp -= 4;
-        *(uint32_t *) (SEL_ADR(_ss, _esp)) = args->arg;
-    } else {
-        _esp -= 2;
-        *(uint16_t *) (SEL_ADR(_ss, _LWORD(esp))) = args->arg;
-    }
-    if (debug_level('M') >= 9)
-	D_printf("post %s", DPMI_show_state(scp));
+    /* dosemu2 re-enters its own DPMI server here; a DPMI host has
+     * nothing like that, so the client stays as it was */
+    error("MSDOS: reinit is not supported under pmdapi\n");
 }
 
-#ifdef DOSEMU
-static void exthlp_thr(void *arg)
+static void ext_call(cpuctx_t *scp, int off, struct loop_s *l)
 {
-    sigcontext_t *scp = arg;
-    sigcontext_t sa = *scp;
+    cpuctx_t sa = *scp;
     struct dos_helper_s *hlp = &ext_helper;
     struct RealModeCallStructure rmreg = {};
-    int off = coopth_get_tid() - hlp->tid;
     unsigned short rm_seg = hlp->rm_seg(scp, off, hlp->rm_arg);
     int is_32 = msdos.is_32();
     struct pmrm_ret ret;
@@ -601,7 +517,9 @@ static void exthlp_thr(void *arg)
     switch (ret.ret) {
     case MSDOS_NONE:
     case MSDOS_PM:
-	coopth_leave();
+	/* chain: the previous handler gets the client's iret frame and
+	 * the flags we were entered with */
+	_eflags = l->entry_flags;
 	_cs = ret.prev.selector;
 	_eip = ret.prev.offset32;
 	return;
@@ -620,35 +538,296 @@ static void exthlp_thr(void *arg)
     case POSTEXT_NONE:
 	break;
     case POSTEXT_PUSH:
-	pargs.scp = scp;
-	pargs.arg = pret.arg;
-	coopth_add_post_handler(do_post_push, &pargs);
+	l->post_push = 1;
+	l->post_arg = pret.arg;
 	break;
     }
-    if (debug_level('M') >= 9)
-	D_printf("post %s", DPMI_show_state(scp));
 }
-#endif
+
+/*
+ * dosemu2 sees a write to the LDT alias before the client does. Here it is
+ * a page fault that the host gives to the client's exception handler, so
+ * ours has to stay the one the host calls: a client that sets its own #GP
+ * or #PF handler gets it recorded as the one ours goes on to, which is
+ * what dosemu2 does with the handler it had before.
+ */
+static DPMI_INTDESC prev_int31[DPMI_MAX_CLIENTS];
+static int cur_clnt;
+
+static void int31_call(cpuctx_t *scp, struct loop_s *l)
+{
+    int is_32 = msdos.is_32();
+    int num = _LO(bx);
+    DPMI_INTDESC *p;
+
+    if ((_LWORD(eax) == 0x202 || _LWORD(eax) == 0x203) &&
+	    (num == 0xd || num == 0xe)) {
+	void *(*get)(void) = num == 0xd ? msdos.fault_arg :
+		msdos.pagefault_arg;
+	p = get();
+	if (_LWORD(eax) == 0x202) {
+	    _LWORD(ecx) = p->selector;
+	    if (is_32)
+		_edx = p->offset32;
+	    else
+		_LWORD(edx) = p->offset32;
+	} else {
+	    p->selector = _LWORD(ecx);
+	    p->offset32 = is_32 ? _edx : _LWORD(edx);
+	}
+	_eflags &= ~CF;
+	return;
+    }
+    /* the host's own: it gets the client's iret frame as it is */
+    p = &prev_int31[cur_clnt];
+    _eflags = l->entry_flags;
+    _cs = p->selector;
+    _eip = p->offset32;
+}
+
+static void set_clnt(int clnt)
+{
+    /* a client from before we were loaded has not got our int 31h, and
+     * its own is the host's, as the one we already have */
+    if (!prev_int31[clnt].selector)
+	return;
+    cur_clnt = clnt;
+    int31_prev[0] = prev_int31[clnt].offset32;
+    int31_prev[1] = prev_int31[clnt].selector;
+}
+
+static void hook_int31(int clnt)
+{
+    DPMI_INTDESC desc = {
+	.selector = dpmi_sel(),
+	.offset32 = (uintptr_t)int31_entry,
+    };
+    prev_int31[clnt] = dpmi_get_interrupt_vector(0x31);
+    set_clnt(clnt);
+    dpmi_set_interrupt_vector(0x31, desc);
+}
+
+static void run_stub(cpuctx_t *scp, int id, struct loop_s *l)
+{
+    if (id >= CONT_BASE) {
+	switch (cont_kind(id - CONT_BASE)) {
+	case C_RETF:
+	    do_retf(scp);
+	    break;
+	case C_RETF16:
+	    do_retf_x(scp, 0);
+	    break;
+	case C_RETF32:
+	    do_retf_x(scp, 1);
+	    break;
+	case C_IRET:
+	    do_dpmi_iret(scp);
+	    break;
+	case C_IRET_EXT:
+	    do_ext_iret(scp, l);
+	    break;
+	default:
+	    error("MSDOS: stray continuation %i\n", id - CONT_BASE);
+	    doshlp_quit_dpmi(scp);
+	    break;
+	}
+	return;
+    }
+
+    _eip = stub_off(CONT_BASE + id);
+    switch (id) {
+    case ID_FAULT:
+	msdos.fault(scp, msdos.fault_arg);
+	break;
+    case ID_PAGEFAULT:
+	msdos.pagefault(scp, msdos.pagefault_arg);
+	break;
+    case ID_API:
+	msdos.api_call(scp, msdos.api_arg);
+	break;
+    case ID_WINOS2:
+	msdos.api_winos2_call(scp, msdos.api_winos2_arg);
+	break;
+    case ID_LDT16:
+	msdos.ldt_update_call16(scp, NULL);
+	break;
+    case ID_LDT32:
+	msdos.ldt_update_call32(scp, NULL);
+	break;
+    case ID_INT31:
+	int31_call(scp, l);
+	break;
+    case ID_RMCB_CALL0 ... ID_RMCB_CALL2:
+	/* dosemu2 has the ret hlt right after the call one */
+	_eip = stub_off(id - ID_RMCB_CALL0 + ID_RMCB_RET0);
+	run_call_handler(id - ID_RMCB_CALL0, scp);
+	break;
+    case ID_RMCB_RET0 ... ID_RMCB_RET2:
+	run_ret_handler(id - ID_RMCB_RET0, scp);
+	break;
+    case ID_EXT0 ... ID_EXT0 + MAX_EXT - 1:
+	ext_call(scp, id - ID_EXT0, l);
+	break;
+    case ID_HLP0 ... ID_HLP0 + MAX_HLP - 1: {
+	struct hlp_s *h = &hlps[id - ID_HLP0];
+	if (id - ID_HLP0 >= num_hlps)
+	    goto bad;
+	h->thr(scp);
+	if (h->post)
+	    h->post(scp);
+	break;
+    }
+    default:
+    bad:
+	error("MSDOS: unknown pm call %#x\n", _eip);
+	doshlp_quit_dpmi(scp);
+	break;
+    }
+}
+
+static void rsp_call(cpuctx_t *scp, int is_32)
+{
+    unsigned short ds = _ds;
+    int prev = (short)_LWORD(ecx);
+    int op = _LWORD(eax);
+
+    int clnt = _LWORD(ebx);
+
+    pmdapi_rsp_pre(op, clnt, ds);
+    if (is_32)
+	msdos.rsp_call32(scp, NULL);
+    else
+	msdos.rsp_call16(scp, NULL);
+    pmdapi_rsp_post(op, clnt, prev);
+    switch (clnt >= 0 && clnt < DPMI_MAX_CLIENTS ? op : -1) {
+    case 0:
+	hook_int31(clnt);
+	break;
+    case 1:
+	if (prev >= 0 && prev < DPMI_MAX_CLIENTS)
+	    set_clnt(prev);
+	break;
+    case 2:
+	set_clnt(clnt);
+	break;
+    }
+    do_retf_x(scp, is_32);
+}
+
+/* called from entry.S on our own stack; on return the client goes on
+ * from f->regs */
+void pmdapi_entry(struct entry_frame *f)
+{
+    cpuctx_t *scp = &f->regs;
+    unsigned short my_cs = _my_cs();
+    struct loop_s l = { .entry_flags = _eflags };
+    unsigned *ssp;
+    int id = f->id;
+
+    /* where the client's stack was before the stub */
+    _ss = f->ss;
+    _esp = f->esp;
+    stk_add(scp, 24);
+    _cs = my_cs;
+    if ((unsigned char *)cur_sp < pmdapi_stack)
+	error("MSDOS: pmdapi stack overflow, depth %i\n", STK_DEPTH);
+
+    if (id == ID_RSP16 || id == ID_RSP32) {
+	rsp_call(scp, id == ID_RSP32);
+    } else {
+	_eip = stub_off(id);
+	while (_cs == my_cs && (id = stub_id(_eip)) != -1)
+	    run_stub(scp, id, &l);
+    }
+
+    /* never let NT through: iret would take it for a task return */
+    _eflags &= ~(NT_MASK | RF | VM_MASK);
+    /* what entry.S pops before iret, on the client's stack */
+    stk_add(scp, -20);
+    ssp = stk_adr(scp);
+    ssp[0] = _ebx;
+    ssp[1] = _ds;
+    ssp[2] = _eip;
+    ssp[3] = _cs;
+    ssp[4] = _eflags;
+}
 
 void msdoshlp_init(int (*is_32)(void), int len)
 {
+    int size = rm_stubs_end - rm_stubs;
+    int sel;
+    int seg;
+
     msdos.is_32 = is_32;
-#ifdef DOSEMU
-    hlt_state = hlt_init(DPMI_SEL_OFF(MSDOS_hlt_end) -
-	    DPMI_SEL_OFF(MSDOS_hlt_start));
-    doshlp_setup_m(&ext_helper, "msdos ext thr", exthlp_thr, do_iret,
-	    len);
-    exechlp_setup();
-    termhlp_setup();
-#endif
+    assert(len <= MAX_EXT);
+    /* DOS memory for the real mode helpers. It belongs to the system,
+     * not to us: we stay resident after our DOS process is gone. */
+    seg = __dpmi_allocate_dos_memory((size + 15) >> 4, &sel);
+    if (seg == -1) {
+	error("MSDOS: no DOS memory for the helpers\n");
+	return;
+    }
+    WRITE_WORD(SEGOFF2LINEAR(seg - 1, 1), 8);
+    MEMCPY_2DOS(SEGOFF2LINEAR(seg, 0), rm_stubs, size);
+    rm_stubs_seg = seg;
+}
+
+void msdoshlp_setup(void)
+{
 }
 
 int doshlp_idle(void)
 {
-#ifdef DOSEMU
-    idle_enable(0, 100, 0, "int2f_idle_dpmi");
-    return config.hogthreshold;
-#else
+    __dpmi_regs r = {};
+
+    r.x.ax = 0x1680;
+    __dpmi_simulate_real_mode_interrupt(0x2f, &r);
+    return r.h.al == 0;
+}
+
+Bit16u hlt_register_handler_pm(emu_hlt_t handler)
+{
+    error("MSDOS: no hlt handlers under pmdapi\n");
     return 0;
-#endif
+}
+
+void msdos_register_ops(const struct msdos_ldt_ops *ops)
+{
+    assert(!msdos_ldt);
+    msdos_ldt = ops;
+}
+
+void msdos_reset(void)
+{
+    if (!msdos_ldt)
+        return;
+    msdos_ldt->reset();
+}
+
+int msdos_ldt_access(dosaddr_t cr2)
+{
+    if (!msdos_ldt)
+        return 0;
+    return msdos_ldt->access(cr2);
+}
+
+void msdos_ldt_write(cpuctx_t *scp, uint32_t op, int len, dosaddr_t cr2)
+{
+    if (!msdos_ldt)
+        return;
+    msdos_ldt->write(scp, op, len, cr2);
+}
+
+int msdos_ldt_pagefault(cpuctx_t *scp)
+{
+    if (!msdos_ldt)
+        return 0;
+    return msdos_ldt->pagefault(scp);
+}
+
+const char *msdos_describe_selector(unsigned short sel)
+{
+    if (!msdos_ldt)
+        return NULL;
+    return msdos_ldt->describe_selector(sel);
 }
